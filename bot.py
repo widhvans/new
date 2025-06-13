@@ -5,7 +5,6 @@ from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from config import API_ID, API_HASH, BOT_TOKEN, BOT_USERNAME
 from database import users_collection, settings_collection
 from user import save_user
-from channel import get_user_settings
 
 # Configure logging
 logging.basicConfig(
@@ -18,6 +17,7 @@ app = Client("my_bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
 
 @app.on_message(filters.command("start") & filters.private)
 async def start_command(client, message):
+    from channel import get_user_settings
     logger.info(f"Start command received from user {message.from_user.id}")
     try:
         user_id = message.from_user.id
@@ -38,6 +38,7 @@ async def start_command(client, message):
 
 @app.on_callback_query(filters.regex("main_menu"))
 async def main_menu(client, callback):
+    from channel import get_user_settings
     logger.info(f"Main menu requested by user {callback.from_user.id}")
     try:
         user_id = callback.from_user.id

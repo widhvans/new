@@ -53,7 +53,7 @@ class ChannelManager:
                 InlineKeyboardButton(text="📋 See Database Channels", callback_data="see_database_channels")
             ],
             [
-                InlineKeyboardButton(text="🔗 Change Shortener", callback_data="set_shortener"),
+                InlineKeyboardButton(text="🔗 Shortener Settings", callback_data="shortener_settings"),
                 InlineKeyboardButton(text="👀 See Shortener", callback_data="see_shortener")
             ],
             [

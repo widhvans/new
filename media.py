@@ -15,20 +15,24 @@ class MediaManager:
         self.pending_posts = {}  # {user_id: {file_name_base: [media_items]}}
 
     def extract_metadata(self, file_name: str):
+        logger.debug(f"Extracting metadata from file_name: {file_name}")
         season = re.search(r'(?:S|Season)\s*(\d+)', file_name, re.I)
         episode = re.search(r'(?:E|Episode|Ep)\s*(\d+)', file_name, re.I)
         part = re.search(r'(?:Part|P)\s*(\d+)', file_name, re.I)
         base_name = re.sub(r'(?:S|Season|E|Episode|Ep|Part|P)\s*\d+', '', file_name, flags=re.I).strip()
-        return {
+        metadata = {
             "base_name": base_name,
             "season": int(season.group(1)) if season else None,
             "episode": int(episode.group(1)) if episode else None,
             "part": int(part.group(1)) if part else None
         }
+        logger.debug(f"Extracted metadata: {metadata}")
+        return metadata
 
     async def index_media(self, bot: Bot, user_id: int, chat_id: int, message):
         logger.info(f"Attempting to index media for user {user_id} in chat {chat_id}")
         try:
+            logger.debug(f"Checking if chat {chat_id} is a database channel for user {user_id}")
             database_channels = await self.db.get_channels(user_id, "database")
             logger.info(f"Fetched database channels for user {user_id}: {database_channels}")
             if not database_channels:
@@ -52,11 +56,13 @@ class MediaManager:
                 )
                 logger.warning(f"Chat {chat_id} is not a database channel for user {user_id}. Configured channels: {database_channels}")
                 return False
+            logger.debug(f"Verifying bot admin status in chat {chat_id}")
             if not await self.check_admin_status(bot, chat_id, bot.id):
                 await message.reply("I’m not an admin in this database channel. Make me an admin to index media. 🚫")
                 logger.warning(f"Bot not admin in database channel {chat_id} for user {user_id}")
                 return False
 
+            logger.debug(f"Extracting media details from message in chat {chat_id}")
             file_id, file_name, media_type, file_size = None, None, None, None
             if message.photo:
                 file_id = message.photo[-1].file_id
@@ -78,11 +84,13 @@ class MediaManager:
                 logger.warning(f"Unsupported media type {message.content_type} from user {user_id} in chat {chat_id}")
                 return False
 
+            logger.debug(f"Media details: file_id={file_id}, file_name={file_name}, media_type={media_type}, file_size={file_size}")
             if file_id and file_name and file_size is not None:
                 raw_link = f"telegram://file/{file_id}"
                 metadata = self.extract_metadata(file_name)
+                logger.info(f"Saving media to database for user {user_id}: {file_name}")
                 await self.db.save_media(user_id, media_type, file_id, file_name, raw_link, file_size, metadata)
-                logger.info(f"Indexed media {file_name} (type: {media_type}, size: {file_size} bytes) for user {user_id} in chat {chat_id}")
+                logger.info(f"Successfully indexed media {file_name} (type: {media_type}, size: {file_size} bytes) for user {user_id} in chat {chat_id}")
 
                 self.schedule_post(bot, user_id, {
                     "file_id": file_id,
@@ -92,6 +100,7 @@ class MediaManager:
                     "metadata": metadata
                 })
                 await message.reply("Media indexed! Will post to your channels shortly. ✅")
+                logger.info(f"Scheduled posting for media {file_name} for user {user_id}")
                 return True
             else:
                 await message.reply("Invalid media file. Try again. 😕")
@@ -187,3 +196,18 @@ class MediaManager:
                     logger.error(f"Failed to post media group {base_name} to channel {channel_id} for user {user_id}: {e}")
         except Exception as e:
             logger.error(f"Error posting media for user {user_id}: {e}")
+
+    async def check_admin_status(self, bot: Bot, channel_id: int, bot_id: int, retries=3, delay=2):
+        logger.debug(f"Checking admin status for bot {bot_id} in channel {channel_id}")
+        for attempt in range(retries):
+            try:
+                bot_member = await bot.get_chat_member(channel_id, bot_id)
+                if bot_member.status in ["administrator", "creator"]:
+                    logger.info(f"Confirmed bot is admin in channel {channel_id}, attempt {attempt + 1}")
+                    return True
+                logger.warning(f"Bot not admin in channel {channel_id}, attempt {attempt + 1}/{retries}")
+            except Exception as e:
+                logger.error(f"Error checking admin status in channel {channel_id}, attempt {attempt + 1}/{retries}: {e}")
+            await asyncio.sleep(delay * (2 ** attempt))
+        logger.error(f"Bot not admin in channel {channel_id} after {retries} attempts")
+        return False

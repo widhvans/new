@@ -76,11 +76,11 @@ def register_handlers(dp: Dispatcher, db: Database, shortener: Shortener, bot: B
         welcome_msg = (
             f"Welcome to {BOT_USERNAME}! 📦\n\n"
             "I'm your personal storage bot. You can:\n"
-            "- Save media files and get links\n"
-            "- Auto-post to your channels\n"
+            "- Save media files in your database channel\n"
+            "- Auto-post to your post channels\n"
             "- Search files with a clone bot\n"
             "- Use any shortener\n"
-            "Click 'Let's Begin!' to start! 🚀"
+            "Click 'Let's Begin!' to start! 🚀\n\nNote: Send media to your database channel, not here, to index it."
         )
         keyboard = InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="Let's Begin! ▶️", callback_data="main_menu")]
@@ -102,11 +102,11 @@ def register_handlers(dp: Dispatcher, db: Database, shortener: Shortener, bot: B
             welcome_msg = (
                 f"Welcome to {BOT_USERNAME}! 📦\n\n"
                 "I'm your personal storage bot. You can:\n"
-                "- Save media files and get links\n"
-                "- Auto-post to your channels\n"
+                "- Save media files in your database channel\n"
+                "- Auto-post to your post channels\n"
                 "- Search files with a clone bot\n"
                 "- Use any shortener\n"
-                "Click 'Let's Begin!' to start! 🚀"
+                "Click 'Let's Begin!' to start! 🚀\n\nNote: Send media to your database channel, not here, to index it."
             )
             keyboard = InlineKeyboardMarkup(inline_keyboard=[
                 [InlineKeyboardButton(text="Let's Begin! ▶️", callback_data="main_menu")]
@@ -175,7 +175,10 @@ def register_handlers(dp: Dispatcher, db: Database, shortener: Shortener, bot: B
                 await callback.answer()
                 return
             await state.set_state(BotStates.SET_DATABASE_CHANNEL)
-            new_text = "Make me an admin in your database channel (public or private), then send the channel ID (e.g., -100123456789). 🗄️"
+            new_text = (
+                "Make me an admin in your database channel (public or private), then send the channel ID (e.g., -100123456789). 🗄️\n"
+                "Note: Send media to this channel to index it."
+            )
             new_markup = InlineKeyboardMarkup(inline_keyboard=[
                 [InlineKeyboardButton(text="Cancel ❌", callback_data="cancel_add_channel")]
             ])
@@ -231,6 +234,7 @@ def register_handlers(dp: Dispatcher, db: Database, shortener: Shortener, bot: B
         logger.info(f"User {user_id} viewing post channels")
         try:
             channels = await db.get_channels(user_id, "post")
+            logger.info(f"Fetched post channels for user {user_id}: {channels}")
             if not channels:
                 new_text = "No post channels connected! 🚫"
                 if callback.message.text != new_text:
@@ -262,8 +266,9 @@ def register_handlers(dp: Dispatcher, db: Database, shortener: Shortener, bot: B
         logger.info(f"User {user_id} viewing database channels")
         try:
             channels = await db.get_channels(user_id, "database")
+            logger.info(f"Fetched database channels for user {user_id}: {channels}")
             if not channels:
-                new_text = "No database channels connected! 🚫"
+                new_text = "No database channels connected! 🚫\nAdd one to start indexing media."
                 if callback.message.text != new_text:
                     await callback.message.edit_text(new_text, reply_markup=await channel_manager.get_main_menu(user_id))
                 logger.info(f"No database channels for user {user_id}")
@@ -278,7 +283,7 @@ def register_handlers(dp: Dispatcher, db: Database, shortener: Shortener, bot: B
                     InlineKeyboardButton(text="🗑️ Delete", callback_data=f"delete_db_{channel_id}")
                 ])
             keyboard.inline_keyboard.append([InlineKeyboardButton(text="⬅️ Back", callback_data="main_menu")])
-            new_text = "Connected Database Channels:"
+            new_text = "Connected Database Channels:\nSend media to these channels to index it."
             if callback.message.text != new_text or callback.message.reply_markup != keyboard:
                 await callback.message.edit_text(new_text, reply_markup=keyboard)
             logger.info(f"Displayed {len(channels)} database channels for user {user_id}")
@@ -394,6 +399,7 @@ def register_handlers(dp: Dispatcher, db: Database, shortener: Shortener, bot: B
         logger.info(f"User {user_id} checking total files")
         try:
             media_files = await db.get_user_media(user_id)
+            logger.info(f"Fetched {len(media_files)} media files for user {user_id}")
             new_text = f"Total files: {len(media_files)} 📊"
             if callback.message.text != new_text:
                 await callback.message.edit_text(new_text, reply_markup=await channel_manager.get_main_menu(user_id))

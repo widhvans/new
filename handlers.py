@@ -48,7 +48,7 @@ def get_main_menu():
     ])
     return keyboard
 
-async def check_admin_status(bot, channel_id, bot_id, retries=3, delay=2):
+async def check_admin_status(bot: types.Bot, channel_id: int, bot_id: int, retries=3, delay=2):
     for attempt in range(retries):
         try:
             bot_member = await bot.get_chat_member(channel_id, bot_id)
@@ -61,13 +61,33 @@ async def check_admin_status(bot, channel_id, bot_id, retries=3, delay=2):
         await asyncio.sleep(delay * (2 ** attempt))  # Exponential backoff
     return False
 
-async def poll_admin_status(bot, user_id, channel_type, state: FSMContext, timeout=300):
+async def get_user_channels(bot: types.Bot, user_id: int) -> list:
+    channels = []
+    try:
+        # Simulate fetching channels (replace with actual logic if available)
+        # For now, use known channels from database
+        post_channels = await db.get_channels(user_id, "post")
+        db_channels = await db.get_channels(user_id, "database")
+        channels.extend(post_channels)
+        channels.extend(db_channels)
+        # Optionally, fetch recent chats (limited by Telegram API)
+        async for chat in bot.get_updates():
+            if chat.message and chat.message.chat.type == "channel":
+                channels.append(chat.message.chat.id)
+        channels = list(set(channels))  # Remove duplicates
+        logger.info(f"Fetched {len(channels)} channels for user {user_id}")
+    except Exception as e:
+        logger.error(f"Error fetching channels for user {user_id}: {e}")
+    return channels
+
+async def poll_admin_status(bot: types.Bot, user_id: int, channel_type: str, state: FSMContext, timeout=300):
     start_time = asyncio.get_event_loop().time()
+    initial_channels = await get_user_channels(bot, user_id)
     while asyncio.get_event_loop().time() - start_time < timeout:
         try:
-            # Fetch user's channels (simulated via known channels or bot's chats)
-            channels = await db.get_channels(user_id, channel_type)  # Placeholder for actual channel list
-            for channel_id in channels:
+            current_channels = await get_user_channels(bot, user_id)
+            new_channels = [ch for ch in current_channels if ch not in initial_channels]
+            for channel_id in new_channels + current_channels:
                 if await check_admin_status(bot, channel_id, bot.id):
                     channel = await bot.get_chat(channel_id)
                     channel_name = channel.title or "Unnamed Channel"
@@ -87,14 +107,17 @@ async def poll_admin_status(bot, user_id, channel_type, state: FSMContext, timeo
         except Exception as e:
             logger.error(f"Error polling admin status for user {user_id}: {e}")
         await asyncio.sleep(10)  # Poll every 10 seconds
-    await bot.send_message(user_id, f"Timeout: No new admin status detected for {channel_type} channel within 5 minutes. Try again. 😕")
+    try:
+        await bot.send_message(user_id, f"Timeout: No new admin status detected for {channel_type} channel within 5 minutes. Try again. 😕")
+    except Exception:
+        pass
     logger.warning(f"Timeout polling admin status for user {user_id}, channel_type {channel_type}")
     await state.clear()
     return False
 
-def register_handlers(dp: Dispatcher, db: Database, shortener: Shortener):
-    global bot
-    bot = dp.bot
+def register_handlers(dp: Dispatcher, db: Database, shortener: Shortener, bot: types.Bot):
+    global db_instance
+    db_instance = db
     ADMINS = [123456789]  # Replace with actual admin IDs
 
     @dp.message(Command("start"))
@@ -139,7 +162,7 @@ def register_handlers(dp: Dispatcher, db: Database, shortener: Shortener):
         user_id = callback.from_user.id
         logger.info(f"User {user_id} adding post channel")
         try:
-            channels = await db.get_channels(user_id, "post")
+            channels = await db_instance.get_channels(user_id, "post")
             if len(channels) >= 5:
                 await callback.message.edit_text("Max 5 post channels allowed! 🚫", reply_markup=get_main_menu())
                 logger.warning(f"User {user_id} exceeded post channel limit")
@@ -164,7 +187,7 @@ def register_handlers(dp: Dispatcher, db: Database, shortener: Shortener):
         user_id = callback.from_user.id
         logger.info(f"User {user_id} adding database channel")
         try:
-            channels = await db.get_channels(user_id, "database")
+            channels = await db_instance.get_channels(user_id, "database")
             if len(channels) >= 5:
                 await callback.message.edit_text("Max 5 database channels allowed! 🚫", reply_markup=get_main_menu())
                 logger.warning(f"User {user_id} exceeded database channel limit")
@@ -202,7 +225,7 @@ def register_handlers(dp: Dispatcher, db: Database, shortener: Shortener):
 
             _, shortlink_url, api = message.text.split(" ")
             reply = await message.reply("<b>Please wait... ⏳</b>")
-            await db.save_shortener(user_id, shortlink_url, api)
+            await db_instance.save_shortener(user_id, shortlink_url, api)
             await reply.edit_text(
                 f"<b>Successfully added shortlink API for {title} ✅\n\nCurrent shortlink website: <code>{shortlink_url}</code>\nCurrent API: <code>{api}</code>.</b>"
             )
@@ -223,8 +246,7 @@ def register_handlers(dp: Dispatcher, db: Database, shortener: Shortener):
         logger.info(f"User {user_id} sent media in chat {chat_id}")
 
         try:
-            # Fetch database channels
-            database_channels = await db.get_channels(user_id, "database")
+            database_channels = await db_instance.get_channels(user_id, "database")
             logger.info(f"Fetched {len(database_channels)} database channels for user {user_id}")
             if not database_channels:
                 logger.warning(f"No database channels configured for user {user_id}")
@@ -234,13 +256,11 @@ def register_handlers(dp: Dispatcher, db: Database, shortener: Shortener):
                 logger.info(f"Chat {chat_id} is not a database channel for user {user_id}")
                 return
 
-            # Verify bot is admin
             if not await check_admin_status(message.bot, chat_id, message.bot.id):
                 logger.warning(f"Bot not admin in database channel {chat_id} for user {user_id}")
                 await message.reply("I’m not an admin in this database channel. Make me an admin. 🚫")
                 return
 
-            # Extract media details
             file_id = None
             file_name = None
             media_type = None
@@ -267,10 +287,10 @@ def register_handlers(dp: Dispatcher, db: Database, shortener: Shortener):
 
             if file_id and file_name and file_size is not None:
                 raw_link = f"telegram://file/{file_id}"
-                await db.save_media(user_id, media_type, file_id, file_name, raw_link, file_size)
+                await db_instance.save_media(user_id, media_type, file_id, file_name, raw_link, file_size)
                 logger.info(f"Indexed media {file_name} (type: {media_type}, size: {file_size} bytes) for user {user_id} in chat {chat_id}")
-                shortener_settings = await db.get_shortener(user_id)
-                post_channels = await db.get_channels(user_id, "post")
+                shortener_settings = await db_instance.get_shortener(user_id)
+                post_channels = await db_instance.get_channels(user_id, "post")
                 if not shortener_settings or not shortener_settings.get("url") or not shortener_settings.get("api"):
                     logger.warning(f"Invalid or missing shortener settings for user {user_id}")
                     await message.reply("Media indexed, but no valid shortener set. Configure via 'Set Shortener' to enable posting. ⚠️")
@@ -278,7 +298,7 @@ def register_handlers(dp: Dispatcher, db: Database, shortener: Shortener):
                     logger.warning(f"No post channels configured for user {user_id}")
                     await message.reply("Media indexed, but no post channels set. Add one via 'Add Post Channel' to enable posting. ⚠️")
                 else:
-                    asyncio.create_task(post_media_with_delay(dp.bot, user_id, file_name, raw_link, user_id))
+                    asyncio.create_task(post_media_with_delay(bot, user_id, file_name, raw_link, user_id))
                     await message.reply("Media indexed! Will post to your channels shortly. ✅")
             else:
                 logger.warning(f"Invalid media details (file_id: {file_id}, file_name: {file_name}, file_size: {file_size}) from user {user_id}")
@@ -287,7 +307,7 @@ def register_handlers(dp: Dispatcher, db: Database, shortener: Shortener):
             logger.error(f"Error indexing media for user {user_id} in chat {chat_id}: {e}")
             await message.reply("Failed to index media. Try again or contact support. 😕")
 
-    async def post_media_with_delay(bot, user_id, file_name, raw_link, chat_id):
+    async def post_media_with_delay(bot: types.Bot, user_id: int, file_name: str, raw_link: str, chat_id: int):
         try:
             logger.info(f"Scheduling delayed post for media {file_name} for user {user_id}")
             await asyncio.sleep(20)
@@ -295,10 +315,10 @@ def register_handlers(dp: Dispatcher, db: Database, shortener: Shortener):
         except Exception as e:
             logger.error(f"Error in delayed post_media for user {user_id}: {e}")
 
-    async def post_media(bot, user_id, file_name, raw_link, chat_id):
+    async def post_media(bot: types.Bot, user_id: int, file_name: str, raw_link: str, chat_id: int):
         logger.info(f"Posting media {file_name} for user {user_id}")
         try:
-            shortener_settings = await db.get_shortener(user_id)
+            shortener_settings = await db_instance.get_shortener(user_id)
             if not shortener_settings or not shortener_settings.get("url") or not shortener_settings.get("api"):
                 logger.warning(f"Invalid or missing shortener settings for user {user_id}")
                 return
@@ -306,12 +326,12 @@ def register_handlers(dp: Dispatcher, db: Database, shortener: Shortener):
             if not short_link or not short_link.startswith("http"):
                 logger.warning(f"Invalid shortlink for media {file_name}, user {user_id}")
                 return
-            post_channels = await db.get_channels(user_id, "post")
+            post_channels = await db_instance.get_channels(user_id, "post")
             if not post_channels:
                 logger.warning(f"No post channels configured for user {user_id}")
                 return
 
-            settings = await db.get_settings(user_id)
+            settings = await db_instance.get_settings(user_id)
             backup_link = settings.get("backup_link", "")
             how_to_download = settings.get("how_to_download", "")
             poster_url = await fetch_poster(file_name)
@@ -353,7 +373,7 @@ def register_handlers(dp: Dispatcher, db: Database, shortener: Shortener):
         user_id = callback.from_user.id
         logger.info(f"User {user_id} checking total files")
         try:
-            media_files = await db.get_user_media(user_id)
+            media_files = await db_instance.get_user_media(user_id)
             new_text = f"Total files: {len(media_files)} 📊"
             current_text = getattr(callback.message, 'text', '')
             current_markup = getattr(callback.message, 'reply_markup', None)
@@ -387,8 +407,8 @@ def register_handlers(dp: Dispatcher, db: Database, shortener: Shortener):
             if user_id not in ADMINS:
                 logger.warning(f"User {user_id} not authorized for stats")
                 return
-            total_users = await db.db.users.count_documents({})
-            total_db_owners = await db.db.channels.count_documents({"channel_type": "database"})
+            total_users = await db_instance.db.users.count_documents({})
+            total_db_owners = await db_instance.db.channels.count_documents({"channel_type": "database"})
             await message.reply(f"Users: {total_users}\nDatabase Owners: {total_db_owners} 📈")
             logger.info(f"Displayed stats for admin {user_id}")
         except Exception as e:
@@ -415,7 +435,7 @@ def register_handlers(dp: Dispatcher, db: Database, shortener: Shortener):
         logger.info(f"User {user_id} processing shortener")
         try:
             _, shortlink_url, api = message.text.split(" ")
-            await db.save_shortener(user_id, shortlink_url, api)
+            await db_instance.save_shortener(user_id, shortlink_url, api)
             await message.reply(
                 f"Shortener set! ✅\nWebsite: <code>{shortlink_url}</code>\nAPI: <code>{api}</code>",
                 reply_markup=get_main_menu()
@@ -437,7 +457,7 @@ def register_handlers(dp: Dispatcher, db: Database, shortener: Shortener):
         user_id = callback.from_user.id
         logger.info(f"User {user_id} viewing shortener")
         try:
-            shortener = await db.get_shortener(user_id)
+            shortener = await db_instance.get_shortener(user_id)
             new_markup = get_main_menu()
             if shortener:
                 new_text = f"Current Shortener: 👀\nWebsite: <code>{shortener['url']}</code>\nAPI: <code>{shortener['api']}</code>"
@@ -477,7 +497,7 @@ def register_handlers(dp: Dispatcher, db: Database, shortener: Shortener):
                 await message.reply("Invalid URL! Send a valid link starting with http:// or https://. 😕")
                 logger.warning(f"Invalid backup link format by user {user_id}")
                 return
-            await db.save_group_settings(user_id, "backup_link", backup_link)
+            await db_instance.save_group_settings(user_id, "backup_link", backup_link)
             await message.reply(f"Backup link set! ✅\nLink: <code>{backup_link}</code>", reply_markup=get_main_menu())
             await state.clear()
             logger.info(f"Backup link set for user {user_id}")
@@ -510,7 +530,7 @@ def register_handlers(dp: Dispatcher, db: Database, shortener: Shortener):
                 await message.reply("Invalid URL! Send a valid link starting with http:// or https://. 😕")
                 logger.warning(f"Invalid how to download link format by user {user_id}")
                 return
-            await db.save_group_settings(user_id, "how_to_download", how_to_download)
+            await db_instance.save_group_settings(user_id, "how_to_download", how_to_download)
             await message.reply(f"How to Download link set! ✅\nLink: <code>{how_to_download}</code>", reply_markup=get_main_menu())
             await state.clear()
             logger.info(f"How to download link set for user {user_id}")
@@ -524,7 +544,7 @@ def register_handlers(dp: Dispatcher, db: Database, shortener: Shortener):
         user_id = callback.from_user.id
         logger.info(f"User {user_id} adding clone bot")
         try:
-            existing_clone = await db.get_clone_bot(user_id)
+            existing_clone = await db_instance.get_clone_bot(user_id)
             if existing_clone:
                 await callback.message.edit_text(
                     "You already have a clone bot! 🤖 Check 'My Clones' to manage it.",
@@ -550,7 +570,7 @@ def register_handlers(dp: Dispatcher, db: Database, shortener: Shortener):
             token = message.text.strip()
             if not token.count(":") == 1 or len(token) < 35:
                 raise ValueError("Invalid token format")
-            await db.save_clone_bot(user_id, token)
+            await db_instance.save_clone_bot(user_id, token)
             await message.reply(
                 "Clone bot added successfully! ✅\nStart your clone bot with /start.",
                 reply_markup=get_main_menu()
@@ -567,7 +587,7 @@ def register_handlers(dp: Dispatcher, db: Database, shortener: Shortener):
         user_id = callback.from_user.id
         logger.info(f"User {user_id} viewing clone bots")
         try:
-            clone_bot = await db.get_clone_bot(user_id)
+            clone_bot = await db_instance.get_clone_bot(user_id)
             new_markup = get_main_menu()
             if clone_bot:
                 new_text = f"Your Clone Bot: 🤖\nToken: <code>{clone_bot['token']}</code>\nStart it with /start."

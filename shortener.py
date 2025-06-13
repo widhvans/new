@@ -42,11 +42,17 @@ class Shortener:
                     async with session.get(url, params=params, ssl=False) as response:
                         data = await response.json(content_type=None)
                         return data.get("shortlink", link) if data.get("status") == "success" else link
+                elif 'rocklink' in URL:
+                    url = f"https://{URL}/api"
+                    params = {"api": API, "url": link}
+                    async with session.get(url, params=params, ssl=False) as response:
+                        data = await response.json()
+                        return data.get("shortenedUrl", link) if data.get("status") == "success" else link
                 else:
                     url = f"https://{URL}/api"
                     params = {"api": API, "url": link}
                     async with session.get(url, params=params, ssl=False) as response:
-                        data = await response.json(content_type=None)
+                        data = await response.json()
                         return data.get("shortenedUrl", link) if data.get("status") == "success" else link
         except Exception as e:
             logger.error(f"Error generating shortlink for link {link}: {e}")

@@ -31,10 +31,18 @@ async def start_bot(token: str, db: Database):
         shortener = Shortener(db)
         register_handlers(dp, db, shortener, bot)
         await bot.delete_webhook(drop_pending_updates=True)
-        await dp.start_polling(bot, allowed_updates=["message", "callback_query"])
-        logger.info(f"Bot @{bot_info.username} started successfully")
+        for attempt in range(3):
+            try:
+                await dp.start_polling(bot, allowed_updates=["message", "callback_query"])
+                logger.info(f"Bot @{bot_info.username} started successfully")
+                break
+            except Exception as e:
+                logger.warning(f"Failed to start bot @{bot_info.username}, attempt {attempt + 1}/3: {e}")
+                await asyncio.sleep(5 * (2 ** attempt))  # Exponential backoff
+        else:
+            logger.error(f"Failed to start bot @{bot_info.username} after 3 attempts")
     except Exception as e:
-        logger.error(f"Failed to start bot with token ending in {token[-4:]}: {e}")
+        logger.error(f"Failed to initialize bot with token ending in {token[-4:]}: {e}")
 
 async def main():
     check_single_instance()
@@ -45,7 +53,7 @@ async def main():
     # Start clone bots
     clone_bots = await db.get_all_clone_bots()
     logger.info(f"Found {len(clone_bots)} clone bots to start")
-    clone_tasks = [start_bot(clone['token'], db) for clone in clone_bots]
+    clone_tasks = [start_bot(clone['token'], db) for clone in clone_bots if 'token' in clone]
     tasks = [main_task] + clone_tasks
     await asyncio.gather(*tasks, return_exceptions=True)
 

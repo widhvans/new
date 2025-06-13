@@ -56,7 +56,8 @@ class MediaManager:
                 logger.warning(f"Chat {chat_id} is not a database channel for user {user_id}. Configured channels: {database_channels}")
                 return False
             logger.debug(f"Verifying bot permissions in database channel {chat_id}")
-            if not await self.check_admin_status(bot, chat_id, bot.id):
+            admin_status = await self.check_admin_status(bot, chat_id, bot.id)
+            if not admin_status:
                 await message.reply("I’m not an admin in this database channel or lack 'Read Messages' permission. Make me an admin with full rights. 🚫")
                 logger.warning(f"Bot not admin or lacks permissions in database channel {chat_id} for user {user_id}")
                 return False
@@ -183,11 +184,16 @@ class MediaManager:
             try:
                 bot_member = await bot.get_chat_member(channel_id, bot_id)
                 if bot_member.status in ["administrator", "creator"]:
-                    logger.info(f"Confirmed bot is admin in channel {channel_id}, attempt {attempt + 1}")
-                    return True
-                logger.warning(f"Bot not admin in channel {channel_id}, attempt {attempt + 1}/{retries}")
+                    can_read = bot_member.can_read_messages if hasattr(bot_member, "can_read_messages") else True
+                    can_post = bot_member.can_post_messages if hasattr(bot_member, "can_post_messages") else True
+                    if can_read and (channel_id not in await self.db.get_channels(bot_member.user.id, "database") or can_post):
+                        logger.info(f"Confirmed bot is admin in channel {channel_id} with read permissions, attempt {attempt + 1}")
+                        return True
+                    logger.warning(f"Bot lacks read/post permissions in channel {channel_id}, attempt {attempt + 1}/{retries}")
+                else:
+                    logger.warning(f"Bot not admin in channel {channel_id}, attempt {attempt + 1}/{retries}")
             except Exception as e:
                 logger.error(f"Error checking admin status in channel {channel_id}, attempt {attempt + 1}/{retries}: {e}")
             await asyncio.sleep(delay * (2 ** attempt))
-        logger.error(f"Bot not admin in channel {channel_id} after {retries} attempts")
+        logger.error(f"Bot not admin or lacks permissions in channel {channel_id} after {retries} attempts")
         return False

@@ -100,16 +100,16 @@ class Database:
             logger.error(f"Error fetching settings for user {user_id}: {e}")
             return {}
 
-    async def save_clone_bot(self, user_id: int, token: str):
+    async def save_clone_bot(self, user_id: int, token: str, username: str):
         try:
             await self.db.clones.update_one(
                 {"user_id": user_id},
-                {"$set": {"token": token}},
+                {"$set": {"token": token, "username": username}},
                 upsert=True
             )
-            logger.info(f"Saved clone bot token for user {user_id}")
+            logger.info(f"Saved clone bot {username} for user {user_id}")
         except Exception as e:
-            logger.error(f"Error saving clone bot token for user {user_id}: {e}")
+            logger.error(f"Error saving clone bot for user {user_id}: {e}")
             raise
 
     async def get_clone_bot(self, user_id: int):
@@ -123,7 +123,7 @@ class Database:
 
     async def get_all_clone_bots(self):
         try:
-            clones = await self.db.clones.find({}, {"user_id": 1, "token": 1, "_id": 0}).to_list(None)
+            clones = await self.db.clones.find({}, {"user_id": 1, "token": 1, "username": 1, "_id": 0}).to_list(None)
             logger.info(f"Fetched {len(clones)} clone bots")
             return clones
         except Exception as e:

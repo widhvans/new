@@ -1,8 +1,6 @@
 import aiohttp
 import logging
-from config import SHORTLINK_URL, SHORTLINK_API, ENABLE_SHORTLINK
-
-logger = logging.getLogger(__name__)
+from config import SHORTLINK_URL, SHORTLINK_API, ENABLE_SHORTLINK, logger
 
 def is_integer(value):
     try:
@@ -12,7 +10,10 @@ def is_integer(value):
         return False
 
 class Shortener:
-    async def get_shortlink(self, link, chat_id=None, api_var=None, link_var=None):
+    def __init__(self, db):
+        self.db = db
+
+    async def get_shortlink(self, db, link, chat_id=None, api_var=None, link_var=None):
         if chat_id and is_integer(chat_id):
             settings = await db.get_settings(chat_id)
             URL = settings.get('shortlink', SHORTLINK_URL) if api_var is None or link_var is None else link_var
@@ -33,17 +34,20 @@ class Shortener:
         if not IS_SHORTLINK:
             return link
 
-        if URL == "api.shareus.in":
-            url = f"https://{URL}/shortLink"
-            params = {"token": API, "format": "json", "link": link}
+        try:
             async with aiohttp.ClientSession() as session:
-                async with session.get(url, params=params, ssl=False) as response:
-                    data = await response.json(content_type=None)
-                    return data.get("shortlink", link) if data.get("status") == "success" else link
-        else:
-            url = f"https://{URL}/api"
-            params = {"api": API, "url": link}
-            async with aiohttp.ClientSession() as session:
-                async with session.get(url, params=params, ssl=False) as response:
-                    data = await response.json(content_type=None)
-                    return data.get("shortenedUrl", link) if data.get("status") == "success" else link
+                if URL == "api.shareus.in":
+                    url = f"https://{URL}/shortLink"
+                    params = {"token": API, "format": "json", "link": link}
+                    async with session.get(url, params=params, ssl=False) as response:
+                        data = await response.json(content_type=None)
+                        return data.get("shortlink", link) if data.get("status") == "success" else link
+                else:
+                    url = f"https://{URL}/api"
+                    params = {"api": API, "url": link}
+                    async with session.get(url, params=params, ssl=False) as response:
+                        data = await response.json(content_type=None)
+                        return data.get("shortenedUrl", link) if data.get("status") == "success" else link
+        except Exception as e:
+            logger.error(f"Error generating shortlink for link {link}: {e}")
+            return link

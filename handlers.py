@@ -5,6 +5,8 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.filters import Command, StateFilter
 import asyncio
 import logging
+from database import Database
+from shortener import Shortener
 
 logger = logging.getLogger(__name__)
 

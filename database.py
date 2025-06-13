@@ -39,10 +39,10 @@ class Database:
                 "created_at": datetime.now()
             }
             result = await self.db.media.insert_one(document)
-            logger.info(f"Saved media {file_name} (type: {media_type}) for user {user_id}, ID: {result.inserted_id}")
+            logger.info(f"Indexed media {file_name} (type: {media_type}, size: {file_size}) for user {user_id}, ID: {result.inserted_id}")
             return result
         except Exception as e:
-            logger.error(f"Error saving media for user {user_id}: {e}")
+            logger.error(f"Error indexing media for user {user_id}: {e}")
             raise
 
     async def get_user_media(self, user_id):

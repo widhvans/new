@@ -48,6 +48,18 @@ def get_main_menu():
     ])
     return keyboard
 
+async def check_admin_status(bot, channel_id, bot_id, retries=3, delay=2):
+    for attempt in range(retries):
+        try:
+            bot_member = await bot.get_chat_member(channel_id, bot_id)
+            if bot_member.status in ["administrator", "creator"]:
+                return True
+            logger.warning(f"Bot not admin in channel {channel_id}, attempt {attempt + 1}/{retries}")
+        except Exception as e:
+            logger.error(f"Error checking admin status in channel {channel_id}, attempt {attempt + 1}/{retries}: {e}")
+        await asyncio.sleep(delay * (2 ** attempt))  # Exponential backoff
+    return False
+
 def register_handlers(dp: Dispatcher, db: Database, shortener: Shortener):
     ADMINS = [123456789]  # Replace with actual admin IDs
 
@@ -57,8 +69,8 @@ def register_handlers(dp: Dispatcher, db: Database, shortener: Shortener):
         logger.info(f"User {user_id} initiated /start")
         welcome_msg = (
             "Welcome to your personal storage bot! 📦\n"
-            "I can save your media, auto-post to channels, and more.\n"
-            "To connect channels, use the menu to add post or database channels, make me an admin, and forward a message.\n"
+            "Save media, auto-post to channels, and more.\n"
+            "To connect channels, use the menu, make me an admin, and forward a message.\n"
             "Let's get started! 🚀"
         )
         keyboard = InlineKeyboardMarkup(inline_keyboard=[
@@ -99,14 +111,15 @@ def register_handlers(dp: Dispatcher, db: Database, shortener: Shortener):
                 return
             await state.set_state(BotStates.SET_POST_CHANNEL)
             await callback.message.edit_text(
-                "Please make me an admin in your post channel, then forward a message from that channel to confirm. 📢",
+                "Make me an admin in your post channel, then forward a message from that channel to confirm. 📢",
                 reply_markup=get_main_menu()
             )
             logger.info(f"Prompted user {user_id} to add post channel")
             await callback.answer()
         except Exception as e:
             logger.error(f"Failed to prompt post channel setup for user {user_id}: {e}")
-            await callback.message.reply("Failed to initiate post channel setup. Please try again. 😕")
+            await callback.message.reply("Failed to initiate post channel setup. Try again. 😕")
+            await state.clear()
 
     @dp.message(StateFilter(BotStates.SET_POST_CHANNEL))
     async def process_post_channel(message: types.Message, state: FSMContext):
@@ -114,31 +127,39 @@ def register_handlers(dp: Dispatcher, db: Database, shortener: Shortener):
         logger.info(f"User {user_id} processing post channel")
         try:
             if not message.forward_from_chat or message.forward_from_chat.type != "channel":
-                await message.reply("Please forward a message from a channel. 🔄")
+                await message.reply("Forward a message from a channel. 🔄")
                 logger.warning(f"User {user_id} sent invalid forward for post channel")
                 return
             channel_id = message.forward_from_chat.id
             channel_name = message.forward_from_chat.title or "Unnamed Channel"
-            # Verify bot is admin
-            bot_member = await message.bot.get_chat_member(channel_id, message.bot.id)
-            if bot_member.status not in ["administrator", "creator"]:
-                await message.reply("I must be an admin in the channel to connect it. Please make me an admin and try again. 🚫")
+            # Verify bot is admin with retries
+            if not await check_admin_status(message.bot, channel_id, message.bot.id):
+                await message.reply("I’m not an admin in this channel. Make me an admin and forward again. 🚫")
                 logger.warning(f"Bot not admin in post channel {channel_id} for user {user_id}")
                 return
             channels = await db.get_channels(user_id, "post")
+            if channel_id in channels:
+                await message.reply("This channel is already connected as a post channel! ✅", reply_markup=get_main_menu())
+                logger.info(f"Post channel {channel_id} already connected for user {user_id}")
+                await state.clear()
+                return
             if len(channels) >= 5:
-                await message.reply("Max 5 post channels allowed! 🚫")
+                await message.reply("Max 5 post channels allowed! 🚫", reply_markup=get_main_menu())
                 logger.warning(f"User {user_id} exceeded post channel limit")
                 await state.clear()
                 return
             await db.save_channel(user_id, "post", channel_id)
             await message.reply("Post channel connected! ✅ Add more or go back.", reply_markup=get_main_menu())
-            await message.bot.send_message(user_id, f"Channel {channel_name} connected as post channel! ✅")
+            try:
+                await message.bot.send_message(user_id, f"Channel {channel_name} connected as post channel! ✅")
+            except Exception as e:
+                logger.warning(f"Failed to send PM confirmation for post channel {channel_id} to user {user_id}: {e}")
+                await message.bot.send_message(channel_id, f"Connected as post channel, but couldn’t send PM to user. ✅")
             logger.info(f"Connected post channel {channel_id} ({channel_name}) for user {user_id}")
             await state.clear()
         except Exception as e:
             logger.error(f"Error processing post channel for user {user_id}: {e}")
-            await message.reply("Failed to connect post channel. Please try again. 😕")
+            await message.reply("Failed to connect post channel. Try again. 😕")
             await state.clear()
 
     @dp.callback_query(lambda c: c.data == "add_database_channel")
@@ -154,14 +175,15 @@ def register_handlers(dp: Dispatcher, db: Database, shortener: Shortener):
                 return
             await state.set_state(BotStates.SET_DATABASE_CHANNEL)
             await callback.message.edit_text(
-                "Please make me an admin in your database channel, then forward a message from that channel to confirm. 🗄️",
+                "Make me an admin in your database channel, then forward a message from that channel to confirm. 🗄️",
                 reply_markup=get_main_menu()
             )
             logger.info(f"Prompted user {user_id} to add database channel")
             await callback.answer()
         except Exception as e:
             logger.error(f"Failed to prompt database channel setup for user {user_id}: {e}")
-            await callback.message.reply("Failed to initiate database channel setup. Please try again. 😕")
+            await callback.message.reply("Failed to initiate database channel setup. Try again. 😕")
+            await state.clear()
 
     @dp.message(StateFilter(BotStates.SET_DATABASE_CHANNEL))
     async def process_database_channel(message: types.Message, state: FSMContext):
@@ -169,31 +191,39 @@ def register_handlers(dp: Dispatcher, db: Database, shortener: Shortener):
         logger.info(f"User {user_id} processing database channel")
         try:
             if not message.forward_from_chat or message.forward_from_chat.type != "channel":
-                await message.reply("Please forward a message from a channel. 🔄")
+                await message.reply("Forward a message from a channel. 🔄")
                 logger.warning(f"User {user_id} sent invalid forward for database channel")
                 return
             channel_id = message.forward_from_chat.id
             channel_name = message.forward_from_chat.title or "Unnamed Channel"
-            # Verify bot is admin
-            bot_member = await message.bot.get_chat_member(channel_id, message.bot.id)
-            if bot_member.status not in ["administrator", "creator"]:
-                await message.reply("I must be an admin in the channel to connect it. Please make me an admin and try again. 🚫")
+            # Verify bot is admin with retries
+            if not await check_admin_status(message.bot, channel_id, message.bot.id):
+                await message.reply("I’m not an admin in this channel. Make me an admin and forward again. 🚫")
                 logger.warning(f"Bot not admin in database channel {channel_id} for user {user_id}")
                 return
             channels = await db.get_channels(user_id, "database")
+            if channel_id in channels:
+                await message.reply("This channel is already connected as a database channel! ✅", reply_markup=get_main_menu())
+                logger.info(f"Database channel {channel_id} already connected for user {user_id}")
+                await state.clear()
+                return
             if len(channels) >= 5:
-                await message.reply("Max 5 database channels allowed! 🚫")
+                await message.reply("Max 5 database channels allowed! 🚫", reply_markup=get_main_menu())
                 logger.warning(f"User {user_id} exceeded database channel limit")
                 await state.clear()
                 return
             await db.save_channel(user_id, "database", channel_id)
             await message.reply("Database channel connected! ✅ Add more or go back.", reply_markup=get_main_menu())
-            await message.bot.send_message(user_id, f"Channel {channel_name} connected as database channel! ✅")
+            try:
+                await message.bot.send_message(user_id, f"Channel {channel_name} connected as database channel! ✅")
+            except Exception as e:
+                logger.warning(f"Failed to send PM confirmation for database channel {channel_id} to user {user_id}: {e}")
+                await message.bot.send_message(channel_id, f"Connected as database channel, but couldn’t send PM to user. ✅")
             logger.info(f"Connected database channel {channel_id} ({channel_name}) for user {user_id}")
             await state.clear()
         except Exception as e:
             logger.error(f"Error processing database channel for user {user_id}: {e}")
-            await message.reply("Failed to connect database channel. Please try again. 😕")
+            await message.reply("Failed to connect database channel. Try again. 😕")
             await state.clear()
 
     @dp.message(Command("shortlink"))
@@ -226,7 +256,7 @@ def register_handlers(dp: Dispatcher, db: Database, shortener: Shortener):
             logger.warning(f"Invalid /shortlink format by user {user_id}")
         except Exception as e:
             logger.error(f"Error setting shortlink for user {user_id}: {e}")
-            await message.reply("Failed to set shortlink. Please try again. 😕")
+            await message.reply("Failed to set shortlink. Try again. 😕")
 
     @dp.message(MediaFilter())
     async def handle_media(message: types.Message):
@@ -245,11 +275,10 @@ def register_handlers(dp: Dispatcher, db: Database, shortener: Shortener):
                 logger.info(f"Chat {chat_id} is not a database channel for user {user_id}")
                 return
 
-            # Verify bot is admin in database channel
-            bot_member = await message.bot.get_chat_member(chat_id, message.bot.id)
-            if bot_member.status not in ["administrator", "creator"]:
+            # Verify bot is admin
+            if not await check_admin_status(message.bot, chat_id, message.bot.id):
                 logger.warning(f"Bot not admin in database channel {chat_id} for user {user_id}")
-                await message.reply("I must be an admin in this database channel to process media. Please add me as an admin. 🚫")
+                await message.reply("I’m not an admin in this database channel. Make me an admin. 🚫")
                 return
 
             # Extract media details
@@ -274,12 +303,12 @@ def register_handlers(dp: Dispatcher, db: Database, shortener: Shortener):
                 file_size = message.document.file_size
             else:
                 logger.warning(f"Unsupported media type from user {user_id} in chat {chat_id}")
-                await message.reply("Unsupported media type. Please send a photo, video, or document. 😕")
+                await message.reply("Unsupported media type. Send a photo, video, or document. 😕")
                 return
 
             if file_id and file_name and file_size is not None:
                 raw_link = f"telegram://file/{file_id}"
-                # Save media to database
+                # Save media
                 await db.save_media(user_id, media_type, file_id, file_name, raw_link, file_size)
                 logger.info(f"Indexed media {file_name} (type: {media_type}, size: {file_size} bytes) for user {user_id} in chat {chat_id}")
                 # Check configurations for posting
@@ -297,10 +326,10 @@ def register_handlers(dp: Dispatcher, db: Database, shortener: Shortener):
                     await message.reply("Media indexed! Will post to your channels shortly. ✅")
             else:
                 logger.warning(f"Invalid media details (file_id: {file_id}, file_name: {file_name}, file_size: {file_size}) from user {user_id}")
-                await message.reply("Invalid media file. Please try again. 😕")
+                await message.reply("Invalid media file. Try again. 😕")
         except Exception as e:
             logger.error(f"Error indexing media for user {user_id} in chat {chat_id}: {e}")
-            await message.reply("Failed to index media. Please try again or contact support. 😕")
+            await message.reply("Failed to index media. Try again or contact support. 😕")
 
     async def post_media_with_delay(bot, user_id, file_name, raw_link, chat_id):
         try:
@@ -341,9 +370,8 @@ def register_handlers(dp: Dispatcher, db: Database, shortener: Shortener):
 
             for channel_id in post_channels:
                 try:
-                    # Verify bot is admin in post channel
-                    bot_member = await bot.get_chat_member(channel_id, bot.id)
-                    if bot_member.status not in ["administrator", "creator"]:
+                    # Verify bot is admin
+                    if not await check_admin_status(bot, channel_id, bot.id):
                         logger.warning(f"Bot not admin in post channel {channel_id} for user {user_id}")
                         continue
                     if poster_url:
@@ -381,7 +409,7 @@ def register_handlers(dp: Dispatcher, db: Database, shortener: Shortener):
             logger.info(f"Displayed total files ({len(media_files)}) for user {user_id}")
         except Exception as e:
             logger.error(f"Error showing total files for user {user_id}: {e}")
-            await callback.message.reply("Failed to fetch total files. Please try again. 😕")
+            await callback.message.reply("Failed to fetch total files. Try again. 😕")
 
     @dp.message(Command("broadcast"))
     async def broadcast_command(message: types.Message):
@@ -410,7 +438,7 @@ def register_handlers(dp: Dispatcher, db: Database, shortener: Shortener):
             logger.info(f"Displayed stats for admin {user_id}")
         except Exception as e:
             logger.error(f"Error in stats command for user {user_id}: {e}")
-            await message.reply("Failed to fetch stats. Please try again. 😕")
+            await message.reply("Failed to fetch stats. Try again. 😕")
 
     @dp.callback_query(lambda c: c.data == "set_shortener")
     async def set_shortener(callback: types.CallbackQuery, state: FSMContext):
@@ -446,7 +474,7 @@ def register_handlers(dp: Dispatcher, db: Database, shortener: Shortener):
             logger.warning(f"Invalid shortener format by user {user_id}")
         except Exception as e:
             logger.error(f"Error processing shortener for user {user_id}: {e}")
-            await message.reply("Failed to set shortener. Please try again. 😕")
+            await message.reply("Failed to set shortener. Try again. 😕")
             await state.clear()
 
     @dp.callback_query(lambda c: c.data == "see_shortener")
@@ -468,7 +496,7 @@ def register_handlers(dp: Dispatcher, db: Database, shortener: Shortener):
             logger.info(f"Displayed shortener for user {user_id}")
         except Exception as e:
             logger.error(f"Error showing shortener for user {user_id}: {e}")
-            await callback.message.reply("Failed to fetch shortener. Please try again. 😕")
+            await callback.message.reply("Failed to fetch shortener. Try again. 😕")
 
     @dp.callback_query(lambda c: c.data == "set_backup_link")
     async def set_backup_link(callback: types.CallbackQuery, state: FSMContext):
@@ -491,7 +519,7 @@ def register_handlers(dp: Dispatcher, db: Database, shortener: Shortener):
         try:
             backup_link = message.text.strip()
             if not backup_link.startswith("http"):
-                await message.reply("Invalid URL! Please send a valid link starting with http:// or https://. 😕")
+                await message.reply("Invalid URL! Send a valid link starting with http:// or https://. 😕")
                 logger.warning(f"Invalid backup link format by user {user_id}")
                 return
             await db.save_group_settings(user_id, "backup_link", backup_link)
@@ -500,7 +528,7 @@ def register_handlers(dp: Dispatcher, db: Database, shortener: Shortener):
             logger.info(f"Backup link set for user {user_id}")
         except Exception as e:
             logger.error(f"Error processing backup link for user {user_id}: {e}")
-            await message.reply("Failed to set backup link. Please try again. 😕")
+            await message.reply("Failed to set backup link. Try again. 😕")
             await state.clear()
 
     @dp.callback_query(lambda c: c.data == "set_how_to_download")
@@ -524,7 +552,7 @@ def register_handlers(dp: Dispatcher, db: Database, shortener: Shortener):
         try:
             how_to_download = message.text.strip()
             if not how_to_download.startswith("http"):
-                await message.reply("Invalid URL! Please send a valid link starting with http:// or https://. 😕")
+                await message.reply("Invalid URL! Send a valid link starting with http:// or https://. 😕")
                 logger.warning(f"Invalid how to download link format by user {user_id}")
                 return
             await db.save_group_settings(user_id, "how_to_download", how_to_download)
@@ -533,7 +561,7 @@ def register_handlers(dp: Dispatcher, db: Database, shortener: Shortener):
             logger.info(f"How to download link set for user {user_id}")
         except Exception as e:
             logger.error(f"Error processing how to download for user {user_id}: {e}")
-            await message.reply("Failed to set how to download link. Please try again. 😕")
+            await message.reply("Failed to set how to download link. Try again. 😕")
             await state.clear()
 
     @dp.callback_query(lambda c: c.data == "add_clone")
@@ -552,7 +580,7 @@ def register_handlers(dp: Dispatcher, db: Database, shortener: Shortener):
                 return
             await state.set_state(BotStates.SET_CLONE_TOKEN)
             await callback.message.edit_text(
-                "Please send the bot token for your clone bot. 🤖\nObtain a token by creating a new bot via @BotFather."
+                "Send the bot token for your clone bot. 🤖\nObtain a token via @BotFather."
             )
             await callback.answer()
             logger.info(f"Prompted user {user_id} to add clone bot token")
@@ -569,14 +597,14 @@ def register_handlers(dp: Dispatcher, db: Database, shortener: Shortener):
                 raise ValueError("Invalid token format")
             await db.save_clone_bot(user_id, token)
             await message.reply(
-                "Clone bot added successfully! ✅\nStart your clone bot with /start to use it.",
+                "Clone bot added successfully! ✅\nStart your clone bot with /start.",
                 reply_markup=get_main_menu()
             )
             await state.clear()
             logger.info(f"Clone bot token saved for user {user_id}")
         except Exception as e:
             logger.error(f"Error adding clone bot for user {user_id}: {e}")
-            await message.reply(f"Failed to add clone bot: {str(e)} 😕\nPlease send a valid token.")
+            await message.reply(f"Failed to add clone bot: {str(e)} 😕\nSend a valid token.")
             await state.clear()
 
     @dp.callback_query(lambda c: c.data == "my_clones")
@@ -587,7 +615,7 @@ def register_handlers(dp: Dispatcher, db: Database, shortener: Shortener):
             clone_bot = await db.get_clone_bot(user_id)
             new_markup = get_main_menu()
             if clone_bot:
-                new_text = f"Your Clone Bot: 🤖\nToken: <code>{clone_bot['token']}</code>\nStart it with /start in the bot."
+                new_text = f"Your Clone Bot: 🤖\nToken: <code>{clone_bot['token']}</code>\nStart it with /start."
             else:
                 new_text = "No clone bots created yet! 🚫\nUse 'Add Clone Bot' to create one."
             current_text = getattr(callback.message, 'text', '')
@@ -598,4 +626,4 @@ def register_handlers(dp: Dispatcher, db: Database, shortener: Shortener):
             logger.info(f"Displayed clone bots for user {user_id}")
         except Exception as e:
             logger.error(f"Error showing clone bots for user {user_id}: {e}")
-            await callback.message.reply("Failed to fetch clone bots. Please try again. 😕")
+            await callback.message.reply("Failed to fetch clone bots. Try again. 😕")

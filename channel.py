@@ -82,6 +82,7 @@ async def handle_channel_input(client, message):
         input_state = settings.get("input_state")
         if input_state not in ["add_post_channel", "add_db_channel"]:
             logger.info(f"No channel input expected for user {user_id}")
+            await message.reply("Please select an action from the menu.")
             return
         channel_type = "post_channels" if input_state == "add_post_channel" else "db_channels"
         channel_id = message.text.strip()
@@ -112,3 +113,5 @@ async def handle_channel_input(client, message):
         logger.error(f"Error handling channel input for user {user_id}: {e}")
         await message.reply("Invalid channel ID or error occurred!")
         await save_user_settings(user_id, "input_state", None)
+        buttons = [[InlineKeyboardButton("Go Back", callback_data="main_menu")]]
+        await message.reply("What next?", reply_markup=InlineKeyboardMarkup(buttons))

@@ -1,6 +1,6 @@
 import asyncio
 import re
-from datetime import datetime, timedelta
+from datetime import datetime
 from aiogram import Bot
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from config import logger
@@ -27,13 +27,18 @@ class MediaManager:
         }
 
     async def index_media(self, bot: Bot, user_id: int, chat_id: int, message):
+        logger.info(f"Attempting to index media for user {user_id} in chat {chat_id}")
         try:
             database_channels = await self.db.get_channels(user_id, "database")
+            if not database_channels:
+                await message.reply("No database channels set! Add one via 'Add Database Channel' and make me an admin. 🚫")
+                logger.warning(f"No database channels configured for user {user_id}")
+                return False
             if chat_id not in database_channels:
                 logger.info(f"Chat {chat_id} is not a database channel for user {user_id}")
                 return False
             if not await self.check_admin_status(bot, chat_id, bot.id):
-                await message.reply("I’m not an admin in this database channel. Make me an admin. 🚫")
+                await message.reply("I’m not an admin in this database channel. Make me an admin to index media. 🚫")
                 logger.warning(f"Bot not admin in database channel {chat_id} for user {user_id}")
                 return False
 
@@ -55,7 +60,7 @@ class MediaManager:
                 file_size = message.document.file_size
             else:
                 await message.reply("Unsupported media type. Send a photo, video, or document. 😕")
-                logger.warning(f"Unsupported media type from user {user_id} in chat {chat_id}")
+                logger.warning(f"Unsupported media type {message.content_type} from user {user_id} in chat {chat_id}")
                 return False
 
             if file_id and file_name and file_size is not None:
@@ -78,7 +83,7 @@ class MediaManager:
                 logger.warning(f"Invalid media details (file_id: {file_id}, file_name: {file_name}, file_size: {file_size}) from user {user_id}")
                 return False
         except Exception as e:
-            logger.error(f"Error indexing media for user {user_id} in chat {chat_id}: {e}")
+            logger.error(f"Error indexing media for user {user_id} in chat {chat_id}: {e}", exc_info=True)
             await message.reply("Failed to index media. Try again or contact support. 😕")
             return False
 
@@ -102,12 +107,14 @@ class MediaManager:
             logger.error(f"Error processing pending post for user {user_id}, base_name {base_name}: {e}")
 
     async def post_media(self, bot: Bot, user_id: int, media_items):
+        logger.info(f"Posting media for user {user_id}")
         try:
             settings = await self.db.get_settings(user_id)
             use_poster = settings.get("use_poster", True)
+            shortener_enabled = settings.get("enable_shortlink", True)
             shortener_settings = await self.db.get_shortener(user_id)
             post_channels = await self.db.get_channels(user_id, "post")
-            if not shortener_settings or not shortener_settings.get("url") or not shortener_settings.get("api"):
+            if shortener_enabled and (not shortener_settings or not shortener_settings.get("url") or not shortener_settings.get("api")):
                 logger.warning(f"Invalid or missing shortener settings for user {user_id}")
                 return
             if not post_channels:
@@ -128,7 +135,7 @@ class MediaManager:
             caption = f"<b>{base_name}</b>\n\n"
             keyboard = InlineKeyboardMarkup(inline_keyboard=[])
             for item in sorted(media_items, key=lambda x: (x["metadata"]["season"] or 0, x["metadata"]["episode"] or 0, x["metadata"]["part"] or 0)):
-                short_link = await self.shortener.get_shortlink(self.db, item["raw_link"], user_id)
+                link = item["raw_link"] if not shortener_enabled else await self.shortener.get_shortlink(self.db, item["raw_link"], user_id)
                 label = item["file_name"]
                 if item["metadata"]["season"]:
                     label = f"S{item['metadata']['season']:02d}"
@@ -136,8 +143,8 @@ class MediaManager:
                         label += f"E{item['metadata']['episode']:02d}"
                 elif item["metadata"]["part"]:
                     label = f"Part {item['metadata']['part']}"
-                caption += f"{label} ({item['file_size'] / 1024 / 1024:.2f} MB): <a href='{short_link}'>Download</a>\n"
-                keyboard.inline_keyboard.append([InlineKeyboardButton(text=f"Download {label}", url=short_link)])
+                caption += f"{label} ({item['file_size'] / 1024 / 1024:.2f} MB): <a href='{link}'>Download</a>\n"
+                keyboard.inline_keyboard.append([InlineKeyboardButton(text=f"Download {label}", url=link)])
 
             backup_link = settings.get("backup_link", "")
             how_to_download = settings.get("how_to_download", "")

@@ -3,7 +3,7 @@ import logging
 from pyrogram import Client, filters
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from config import API_ID, API_HASH, BOT_TOKEN, BOT_USERNAME
-from database import users_collection, settings_collection
+from database import users_collection
 from user import save_user
 
 # Configure logging
@@ -39,7 +39,7 @@ async def start_command(client, message):
 @app.on_callback_query(filters.regex("main_menu"))
 async def main_menu(client, callback):
     from channel import get_user_settings
-    logger.info(f"Main menu requested by user {callback.from_user.id}")
+    logger.info(f"Main menu button clicked by user {callback.from_user.id}")
     try:
         user_id = callback.from_user.id
         settings = await get_user_settings(user_id)
@@ -59,10 +59,12 @@ async def main_menu(client, callback):
             "Choose an option:",
             reply_markup=InlineKeyboardMarkup(buttons)
         )
+        await callback.answer()  # Acknowledge the callback
         logger.info(f"Main menu displayed for user {user_id}")
     except Exception as e:
         logger.error(f"Error in main_menu: {e}")
         await callback.message.edit("Error displaying menu. Try again.")
+        await callback.answer("Error occurred!")
 
 if __name__ == "__main__":
     logger.info("Starting bot...")

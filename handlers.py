@@ -1,18 +1,18 @@
 from aiogram import Dispatcher, types
-from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, ChatMemberUpdated
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
-from aiogram.filters import Command, StateFilter, BaseFilter
+from aiogram.filters import Command, StateFilter, BaseFilter, ChatMemberUpdatedFilter, IS_ADMIN
+from aiogram.utils.deep_linking import create_start_link
 import asyncio
 import logging
 from database import Database
 from shortener import Shortener
+from config import BOT_USERNAME
 
 logger = logging.getLogger(__name__)
 
 class BotStates(StatesGroup):
-    SET_POST_CHANNEL = State()
-    SET_DATABASE_CHANNEL = State()
     SET_SHORTENER = State()
     SET_BACKUP_LINK = State()
     SET_HOW_TO_DOWNLOAD = State()
@@ -24,10 +24,6 @@ class MediaFilter(BaseFilter):
 
 def get_main_menu():
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [
-            InlineKeyboardButton(text="📢 Add Post Channel", callback_data="add_post_channel"),
-            InlineKeyboardButton(text="🗄️ Add Database Channel", callback_data="add_database_channel")
-        ],
         [
             InlineKeyboardButton(text="🔗 Set Shortener", callback_data="set_shortener"),
             InlineKeyboardButton(text="👀 See Shortener", callback_data="see_shortener")
@@ -53,9 +49,35 @@ def register_handlers(dp: Dispatcher, db: Database, shortener: Shortener):
     @dp.message(Command("start"))
     async def start_command(message: types.Message):
         logger.info(f"User {message.from_user.id} initiated /start")
+        args = message.get_args().split("_")
+        if len(args) == 3 and args[0] == "connect":
+            try:
+                channel_id = int(args[1])
+                channel_type = args[2]
+                if channel_type not in ["post", "database"]:
+                    raise ValueError("Invalid channel type")
+                chat = await message.bot.get_chat(channel_id)
+                channel_name = chat.title or "Unnamed Channel"
+                channels = await db.get_channels(message.from_user.id, channel_type)
+                if len(channels) >= 5:
+                    await message.reply(f"Max 5 {channel_type} channels allowed! 🚫")
+                    logger.warning(f"User {message.from_user.id} exceeded {channel_type} channel limit")
+                    return
+                await db.save_channel(message.from_user.id, channel_type, channel_id)
+                await message.reply(f"Channel {channel_name} connected as {channel_type} channel! ✅")
+                logger.info(f"User {message.from_user.id} connected {channel_type} channel {channel_id} ({channel_name})")
+            except ValueError as e:
+                logger.warning(f"Invalid /start connect args for user {message.from_user.id}: {args}")
+                await message.reply("Invalid connection request. Please try again. 😕")
+            except Exception as e:
+                logger.error(f"Error connecting channel for user {message.from_user.id}: {e}")
+                await message.reply("Failed to connect channel. Please try again. 😕")
+            return
+
         welcome_msg = (
             "Welcome to your personal storage bot! 📦\n"
             "I can save your media, auto-post to channels, and more.\n"
+            "To connect channels, make me an admin in your post or database channel.\n"
             "Let's get started! 🚀"
         )
         keyboard = InlineKeyboardMarkup(inline_keyboard=[
@@ -82,93 +104,35 @@ def register_handlers(dp: Dispatcher, db: Database, shortener: Shortener):
         except Exception as e:
             logger.error(f"Failed to show main menu for user {callback.from_user.id}: {e}")
 
-    @dp.callback_query(lambda c: c.data == "add_post_channel")
-    async def add_post_channel(callback: types.CallbackQuery, state: FSMContext):
-        logger.info(f"User {callback.from_user.id} adding post channel")
+    @dp.chat_member(ChatMemberUpdatedFilter(member_status_changed=IS_ADMIN))
+    async def on_admin_status_change(chat_member: ChatMemberUpdated):
+        logger.info(f"Bot admin status changed in chat {chat_member.chat.id}")
         try:
-            await state.set_state(BotStates.SET_POST_CHANNEL)
-            await callback.message.edit_text(
-                "Please add me as an admin to your post channel and forward a message from that channel. 📢"
+            bot_id = chat_member.bot.id
+            if chat_member.new_chat_member.user.id != bot_id:
+                logger.info(f"Ignoring non-bot admin update in chat {chat_member.chat.id}")
+                return
+            if chat_member.new_chat_member.status not in ["administrator", "creator"]:
+                logger.info(f"Bot demoted in chat {chat_member.chat.id}")
+                return
+            user_id = chat_member.from_user.id
+            channel_id = chat_member.chat.id
+            channel_name = chat_member.chat.title or "Unnamed Channel"
+            # Send in-channel notification with PM button
+            pm_link = await create_start_link(chat_member.bot, f"connect_{channel_id}_post", encode=True)
+            keyboard = InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="Connect as Post Channel 📢", url=pm_link)]
+            ])
+            pm_link_db = await create_start_link(chat_member.bot, f"connect_{channel_id}_database", encode=True)
+            keyboard.inline_keyboard.append([InlineKeyboardButton(text="Connect as Database Channel 🗄️", url=pm_link_db)])
+            await chat_member.bot.send_message(
+                channel_id,
+                f"Bot connected to {channel_name}! Click below to confirm in PM with {BOT_USERNAME}. ✅",
+                reply_markup=keyboard
             )
-            await callback.answer()
-            logger.info(f"Prompted user {callback.from_user.id} to add post channel")
+            logger.info(f"Sent admin connection notification in channel {channel_id} for user {user_id}")
         except Exception as e:
-            logger.error(f"Failed to prompt post channel setup for user {callback.from_user.id}: {e}")
-
-    @dp.message(StateFilter(BotStates.SET_POST_CHANNEL))
-    async def process_post_channel(message: types.Message, state: FSMContext):
-        user_id = message.from_user.id
-        logger.info(f"User {user_id} processing post channel")
-        try:
-            if not message.forward_from_chat or message.forward_from_chat.type != "channel":
-                await message.reply("Please forward a message from a channel. 🔄")
-                logger.warning(f"User {user_id} sent invalid forward for post channel")
-                return
-            channel_id = message.forward_from_chat.id
-            # Verify bot is admin
-            bot_member = await message.bot.get_chat_member(channel_id, message.bot.id)
-            if bot_member.status not in ["administrator", "creator"]:
-                await message.reply("I must be an admin in the channel to save it. Please add me as an admin. 🚫")
-                logger.warning(f"Bot not admin in channel {channel_id} for user {user_id}")
-                return
-            channels = await db.get_channels(user_id, "post")
-            if len(channels) >= 5:
-                await message.reply("Max 5 post channels allowed! 🚫")
-                await state.clear()
-                logger.warning(f"User {user_id} exceeded post channel limit")
-                return
-            await db.save_channel(user_id, "post", channel_id)
-            await message.reply("Post channel connected! ✅ Add more or go back.", reply_markup=get_main_menu())
-            await state.clear()
-            logger.info(f"Post channel {channel_id} saved for user {user_id}")
-        except Exception as e:
-            logger.error(f"Error processing post channel for user {user_id}: {e}")
-            await message.reply("Failed to save post channel. Please try again. 😕")
-            await state.clear()
-
-    @dp.callback_query(lambda c: c.data == "add_database_channel")
-    async def add_database_channel(callback: types.CallbackQuery, state: FSMContext):
-        logger.info(f"User {callback.from_user.id} adding database channel")
-        try:
-            await state.set_state(BotStates.SET_DATABASE_CHANNEL)
-            await callback.message.edit_text(
-                "Please add me as an admin to your database channel and forward a message from that channel. 🗄️"
-            )
-            await callback.answer()
-            logger.info(f"Prompted user {callback.from_user.id} to add database channel")
-        except Exception as e:
-            logger.error(f"Failed to prompt database channel setup for user {callback.from_user.id}: {e}")
-
-    @dp.message(StateFilter(BotStates.SET_DATABASE_CHANNEL))
-    async def process_database_channel(message: types.Message, state: FSMContext):
-        user_id = message.from_user.id
-        logger.info(f"User {user_id} processing database channel")
-        try:
-            if not message.forward_from_chat or message.forward_from_chat.type != "channel":
-                await message.reply("Please forward a message from a channel. 🔄")
-                logger.warning(f"User {user_id} sent invalid forward for database channel")
-                return
-            channel_id = message.forward_from_chat.id
-            # Verify bot is admin
-            bot_member = await message.bot.get_chat_member(channel_id, message.bot.id)
-            if bot_member.status not in ["administrator", "creator"]:
-                await message.reply("I must be an admin in the channel to save it. Please add me as an admin. 🚫")
-                logger.warning(f"Bot not admin in channel {channel_id} for user {user_id}")
-                return
-            channels = await db.get_channels(user_id, "database")
-            if len(channels) >= 5:
-                await message.reply("Max 5 database channels allowed! 🚫")
-                await state.clear()
-                logger.warning(f"User {user_id} exceeded database channel limit")
-                return
-            await db.save_channel(user_id, "database", channel_id)
-            await message.reply("Database channel connected! ✅ Add more or go back.", reply_markup=get_main_menu())
-            await state.clear()
-            logger.info(f"Database channel {channel_id} saved for user {user_id}")
-        except Exception as e:
-            logger.error(f"Error processing database channel for user {user_id}: {e}")
-            await message.reply("Failed to save database channel. Please try again. 😕")
-            await state.clear()
+            logger.error(f"Error handling admin status change in chat {chat_member.chat.id}: {e}")
 
     @dp.message(Command("shortlink"))
     async def shortlink_command(message: types.Message):
@@ -213,7 +177,7 @@ def register_handlers(dp: Dispatcher, db: Database, shortener: Shortener):
             database_channels = await db.get_channels(user_id, "database")
             if not database_channels:
                 logger.warning(f"No database channels configured for user {user_id}")
-                await message.reply("No database channels set! Please add one via 'Add Database Channel'. 🚫")
+                await message.reply("No database channels set! Make me an admin in a channel to set it as a database channel. 🚫")
                 return
             if chat_id not in database_channels:
                 logger.info(f"Chat {chat_id} is not a database channel for user {user_id}")
@@ -226,6 +190,20 @@ def register_handlers(dp: Dispatcher, db: Database, shortener: Shortener):
                 await message.reply("I must be an admin in this database channel to process media. Please add me as an admin. 🚫")
                 return
 
+            # Check shortener configuration
+            shortener_settings = await db.get_shortener(user_id)
+            if not shortener_settings:
+                logger.warning(f"No shortener settings for user {user_id}")
+                await message.reply("No shortener set! Please configure via 'Set Shortener'. Indexing skipped. ⚠️")
+                return
+
+            # Check post channels
+            post_channels = await db.get_channels(user_id, "post")
+            if not post_channels:
+                logger.warning(f"No post channels configured for user {user_id}")
+                await message.reply("No post channels set! Make me an admin in a channel to set it as a post channel. Indexing skipped. ⚠️")
+                return
+
             # Extract media details
             file_id = None
             file_name = None
@@ -235,43 +213,32 @@ def register_handlers(dp: Dispatcher, db: Database, shortener: Shortener):
                 file_id = message.photo[-1].file_id
                 media_type = "photo"
                 file_name = f"photo_{message.message_id}.jpg"
-                file_size = message.photo[-1].file_size or "Unknown"
+                file_size = message.photo[-1].file_size
             elif message.video:
                 file_id = message.video.file_id
                 media_type = "video"
                 file_name = message.video.file_name or f"video_{message.message_id}.mp4"
-                file_size = message.video.file_size or "Unknown"
+                file_size = message.video.file_size
             elif message.document:
                 file_id = message.document.file_id
                 media_type = "document"
                 file_name = message.document.file_name or f"doc_{message.message_id}"
-                file_size = message.document.file_size or "Unknown"
+                file_size = message.document.file_size
             else:
                 logger.warning(f"Unsupported media type from user {user_id} in chat {chat_id}")
                 await message.reply("Unsupported media type. Please send a photo, video, or document. 😕")
                 return
 
-            if file_id:
+            if file_id and file_name:
                 raw_link = f"telegram://file/{file_id}"
                 # Save media to database
                 await db.save_media(user_id, media_type, file_id, file_name, raw_link, file_size)
-                logger.info(f"Indexed media {file_name} (type: {media_type}) for user {user_id} in chat {chat_id}")
-                # Check for required configurations
-                shortener_settings = await db.get_shortener(chat_id)
-                if not shortener_settings:
-                    logger.warning(f"No shortener settings for chat {chat_id}, user {user_id}")
-                    await message.reply("No shortener set! Please configure via 'Set Shortener'. Posting skipped. ⚠️")
-                    return
-                post_channels = await db.get_channels(user_id, "post")
-                if not post_channels:
-                    logger.warning(f"No post channels configured for user {user_id}")
-                    await message.reply("No post channels set! Please add one via 'Add Post Channel'. Posting skipped. ⚠️")
-                    return
+                logger.info(f"Indexed media {file_name} (type: {media_type}, size: {file_size}) for user {user_id} in chat {chat_id}")
                 # Schedule posting
                 asyncio.create_task(post_media_with_delay(dp.bot, user_id, file_name, raw_link, chat_id))
                 await message.reply("Media indexed! Will post to your channels shortly. ✅")
             else:
-                logger.warning(f"No valid file ID found in media message from user {user_id}")
+                logger.warning(f"Invalid media details (file_id: {file_id}, file_name: {file_name}) from user {user_id}")
                 await message.reply("Invalid media file. Please try again. 😕")
         except Exception as e:
             logger.error(f"Error indexing media for user {user_id} in chat {chat_id}: {e}")
@@ -288,13 +255,13 @@ def register_handlers(dp: Dispatcher, db: Database, shortener: Shortener):
     async def post_media(bot, user_id, file_name, raw_link, chat_id):
         logger.info(f"Posting media {file_name} for user {user_id} from chat {chat_id}")
         try:
-            shortener_settings = await db.get_shortener(chat_id)
+            shortener_settings = await db.get_shortener(user_id)
             if not shortener_settings:
-                logger.warning(f"No shortener settings for chat {chat_id}, user {user_id}")
+                logger.warning(f"No shortener settings for user {user_id}")
                 return
-            short_link = await shortener.get_shortlink(raw_link, chat_id)
-            if not short_link:
-                logger.warning(f"Failed to generate shortlink for media {file_name}, user {user_id}")
+            short_link = await shortener.get_shortlink(raw_link, user_id)
+            if not short_link or not short_link.startswith("http"):
+                logger.warning(f"Invalid shortlink for media {file_name}, user {user_id}")
                 return
             post_channels = await db.get_channels(user_id, "post")
             if not post_channels:

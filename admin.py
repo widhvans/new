@@ -1,51 +1,32 @@
-from aiogram import Bot
-from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
-from config import logger, ADMIN_IDS
+from pyrogram import Client, filters
+from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+from config import ADMINS
+from database import users_collection, settings_collection
+from bot import app, logger
 
-class AdminManager:
-    def __init__(self, db):
-        self.db = db
-
-    async def broadcast(self, bot: Bot, user_id: int, message, target: str):
-        if user_id not in ADMIN_IDS:
-            await message.reply("You’re not authorized to use this command! 🚫")
-            logger.warning(f"Unauthorized broadcast attempt by user {user_id}")
-            return
-
+@app.on_message(filters.command("broadcast") & filters.user(ADMINS))
+async def broadcast(client, message):
+    target = message.text.split(" ", 1)[1] if len(message.text.split()) > 1 else "all"
+    users = []
+    if target in ["users", "all"]:
+        users.extend([u["user_id"] async for u in users_collection.find()])
+    if target in ["db_owners", "all"]:
+        users.extend([s["user_id"] async for s in settings_collection.find({"db_channels": {"$exists": True}})])
+    users = list(set(users))
+    msg = await message.reply("Enter the broadcast message:")
+    broadcast_msg = (await client.wait_for_message(msg.chat.id, msg.id + 1)).text
+    sent = 0
+    for user_id in users:
         try:
-            targets = []
-            if target == "users":
-                targets = await self.db.get_all_users()
-            elif target == "database_owners":
-                targets = await self.db.get_all_database_owners()
-            elif target == "both":
-                targets = list(set(await self.db.get_all_users() + await self.db.get_all_database_owners()))
-
-            sent = 0
-            for target_id in targets:
-                try:
-                    await bot.copy_message(target_id, message.chat.id, message.message_id)
-                    sent += 1
-                    await asyncio.sleep(0.1)  # Rate limit
-                except Exception as e:
-                    logger.warning(f"Failed to send broadcast to user {target_id}: {e}")
-            await message.reply(f"Broadcast sent to {sent}/{len(targets)} {target}! 📢")
-            logger.info(f"Broadcast sent to {sent}/{len(targets)} {target} by admin {user_id}")
+            await client.send_message(user_id, broadcast_msg)
+            sent += 1
+            await asyncio.sleep(1)
         except Exception as e:
-            logger.error(f"Error in broadcast by admin {user_id}: {e}")
-            await message.reply("Failed to send broadcast. Try again. 😕")
+            logger.error(f"Failed to send broadcast to {user_id}: {e}")
+    await msg.reply(f"Broadcast sent to {sent}/{len(users)} users.")
 
-    async def stats(self, bot: Bot, user_id: int, message):
-        if user_id not in ADMIN_IDS:
-            await message.reply("You’re not authorized to use this command! 🚫")
-            logger.warning(f"Unauthorized stats attempt by user {user_id}")
-            return
-
-        try:
-            total_users = len(await self.db.get_all_users())
-            total_db_owners = len(await self.db.get_all_database_owners())
-            await message.reply(f"📊 <b>Statistics</b>\n\nTotal Users: {total_users}\nDatabase Owners: {total_db_owners}", parse_mode="HTML")
-            logger.info(f"Displayed stats to admin {user_id}")
-        except Exception as e:
-            logger.error(f"Error in stats for admin {user_id}: {e}")
-            await message.reply("Failed to fetch stats. Try again. 😕")
+@app.on_message(filters.command("stats") & filters.user(ADMINS))
+async def stats(client, message):
+    total_users = await users_collection.count_documents({})
+    db_owners = await settings_collection.count_documents({"db_channels": {"$exists": True}})
+    await message.reply(f"Total Users: {total_users}\nDatabase Owners: {db_owners}")

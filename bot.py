@@ -93,7 +93,7 @@ async def handle_callback(client, callback):
                 logger.warning(f"User {user_id} attempted to add more than 5 post channels")
                 return
             await callback.message.edit(
-                "Send channel ID (e.g., -100123456789). Make me admin first!",
+                "Send channel ID (e.g., -100123456789). Add me to the channel first!",
                 reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Go Back", callback_data="main_menu")]])
             )
             await save_user_settings(user_id, "input_state", "add_post_channel")
@@ -109,7 +109,7 @@ async def handle_callback(client, callback):
                 logger.warning(f"User {user_id} attempted to add more than 5 db channels")
                 return
             await callback.message.edit(
-                "Send channel ID (e.g., -100123456789). Make me admin first!",
+                "Send channel ID (e.g., -100123456789). Add me to the channel first!",
                 reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Go Back", callback_data="main_menu")]])
             )
             await save_user_settings(user_id, "input_state", "add_db_channel")
@@ -222,22 +222,35 @@ async def handle_input(client, message):
             channel_type = "post_channels" if input_state == "add_post_channel" else "db_channels"
             channel_id = message.text.strip()
             logger.info(f"Processing channel ID {channel_id} for {channel_type} by user {user_id}")
-            chat = await client.get_chat(channel_id)
-            admins = await client.get_chat_members(channel_id, filter=enums.ChatMembersFilter.ADMINISTRATORS)
-            bot_id = (await client.get_me()).id
-            if not any(admin.user.id == bot_id for admin in admins):
-                await message.reply("I'm not an admin in this channel!")
-                logger.warning(f"Bot not admin in channel {channel_id} for user {user_id}")
-                return
-            channels = settings.get(channel_type, [])
-            if channel_id not in channels:
-                channels.append(channel_id)
-                await save_user_settings(user_id, channel_type, channels)
-                await message.reply(f"{channel_type.replace('_', ' ').title()} connected!")
-                logger.info(f"Channel {channel_id} added to {channel_type} for user {user_id}")
-            else:
-                await message.reply("Channel already connected!")
-                logger.info(f"Channel {channel_id} already connected for user {user_id}")
+            try:
+                chat = await client.get_chat(channel_id)
+                logger.info(f"Chat fetched: {chat.title} ({chat.id})")
+                admins = await client.get_chat_members(channel_id, filter=enums.ChatMembersFilter.ADMINISTRATORS)
+                bot_id = (await client.get_me()).id
+                if not any(admin.user.id == bot_id for admin in admins):
+                    await message.reply(
+                        "I'm not an admin in this channel! Please add me to the channel and make me an admin."
+                    )
+                    logger.warning(f"Bot not admin in channel {channel_id} for user {user_id}")
+                    return
+                channels = settings.get(channel_type, [])
+                if channel_id not in channels:
+                    channels.append(channel_id)
+                    await save_user_settings(user_id, channel_type, channels)
+                    await message.reply(f"{channel_type.replace('_', ' ').title()} connected!")
+                    logger.info(f"Channel {channel_id} added to {channel_type} for user {user_id}")
+                else:
+                    await message.reply("Channel already connected!")
+                    logger.info(f"Channel {channel_id} already connected for user {user_id}")
+            except Exception as e:
+                if "PEER_ID_INVALID" in str(e):
+                    await message.reply(
+                        "Invalid channel ID or I haven't interacted with this channel. Please add me to the channel first!"
+                    )
+                    logger.error(f"PEER_ID_INVALID for channel {channel_id} by user {user_id}")
+                    return
+                else:
+                    raise e
 
         elif input_state == "set_shortener":
             try:
@@ -259,10 +272,20 @@ async def handle_input(client, message):
 
         elif input_state == "set_fsub":
             channel_id = message.text.strip()
-            chat = await client.get_chat(channel_id)
-            await save_user_settings(user_id, "fsub_channel", channel_id)
-            await message.reply(f"Forced subscription set to {chat.title}!")
-            logger.info(f"Fsub set to {channel_id} for user {user_id}")
+            try:
+                chat = await client.get_chat(channel_id)
+                await save_user_settings(user_id, "fsub_channel", channel_id)
+                await message.reply(f"Forced subscription set to {chat.title}!")
+                logger.info(f"Fsub set to {channel_id} for user {user_id}")
+            except Exception as e:
+                if "PEER_ID_INVALID" in str(e):
+                    await message.reply(
+                        "Invalid channel ID or I haven't interacted with this channel. Please add me to the channel first!"
+                    )
+                    logger.error(f"PEER_ID_INVALID for fsub channel {channel_id} by user {user_id}")
+                    return
+                else:
+                    raise e
 
         elif input_state == "clone_search":
             query = message.text.strip().lower()
@@ -292,8 +315,7 @@ async def handle_input(client, message):
 
     except Exception as e:
         logger.error(f"Error handling input for user {user_id}: {e}")
-        await message.reply("Invalid input or error occurred!")
-        await save_user_settings(user_id, "input_state", None)
+        await message.reply("An error occurred! Please try again.")
         buttons = [[InlineKeyboardButton("Go Back", callback_data="main_menu")]]
         await message.reply("What next?", reply_markup=InlineKeyboardMarkup(buttons))
 

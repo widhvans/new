@@ -36,30 +36,14 @@ class Shortener:
         if URL == "api.shareus.in":
             url = f"https://{URL}/shortLink"
             params = {"token": API, "format": "json", "link": link}
-            try:
-                async with aiohttp.ClientSession() as session:
-                    async with session.get(url, params=params, raise_for_status=True, ssl=False) as response:
-                        data = await response.json(content_type="text/html")
-                        if data["status"] == "success" and 'shortlink' in data:
-                            return data["shortlink"]
-                        else:
-                            logger.error(f"Error: {data['message']}\nUrl Provider: {URL}")
-                            return link
-            except Exception as e:
-                logger.error(f"Error: {e}\nUrl Provider: {URL}")
-                return link
+            async with aiohttp.ClientSession() as session:
+                async with session.get(url, params=params, ssl=False) as response:
+                    data = await response.json(content_type=None)
+                    return data.get("shortlink", link) if data.get("status") == "success" else link
         else:
-            url = f'https://{URL}/api'
-            params = {'api': API, 'url': link}
-            try:
-                async with aiohttp.ClientSession() as session:
-                    async with session.get(url, params=params, raise_for_status=True, ssl=False) as response:
-                        data = await response.json()
-                        if data["status"] == "success" and 'shortenedUrl' in data:
-                            return data['shortenedUrl']
-                        else:
-                            logger.error(f"Error: {data['message']}\nUrl Provider: {URL}")
-                            return link
-            except Exception as e:
-                logger.error(f"Error: {e}\nUrl Provider: {URL}")
-                return link
+            url = f"https://{URL}/api"
+            params = {"api": API, "url": link}
+            async with aiohttp.ClientSession() as session:
+                async with session.get(url, params=params, ssl=False) as response:
+                    data = await response.json(content_type=None)
+                    return data.get("shortenedUrl", link) if data.get("status") == "success" else link

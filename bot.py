@@ -4,7 +4,7 @@ from pyrogram import Client, filters, enums
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from pyrogram.errors import PeerIdInvalid, ChatAdminRequired, MessageNotModified
 from config import API_ID, API_HASH, BOT_TOKEN, BOT_USERNAME, SHORTLINK_URL, SHORTLINK_API
-from database import users_collection, settings_collection, media_collection
+from database import users_collection, settings_collection
 from user import save_user
 
 # Configure logging
@@ -39,18 +39,15 @@ async def save_user_settings(user_id, key, value):
 
 async def validate_channel(client, channel_id, user_id, require_admin=True):
     logger.info(f"Validating channel {channel_id} for user {user_id}")
-    for attempt in range(3):  # Retry 3 times
+    for attempt in range(3):
         try:
-            # Fetch chat to verify access
             chat = await client.get_chat(channel_id)
             logger.info(f"Chat fetched: {chat.title} ({chat.id})")
             bot_id = (await client.get_me()).id
-            # Check bot membership
             member = await client.get_chat_member(channel_id, bot_id)
             if member.status not in [enums.ChatMemberStatus.MEMBER, enums.ChatMemberStatus.ADMINISTRATOR]:
                 logger.warning(f"Bot not a member in channel {channel_id}")
                 return False, "Bot is not a member of this channel."
-            # Check admin status if required
             if require_admin:
                 admins = []
                 async for admin in client.get_chat_members(channel_id, filter=enums.ChatMembersFilter.ADMINISTRATORS):
@@ -58,7 +55,6 @@ async def validate_channel(client, channel_id, user_id, require_admin=True):
                 if not any(admin.user.id == bot_id for admin in admins):
                     logger.warning(f"Bot not admin in channel {channel_id}")
                     return False, "Bot is not an admin in this channel."
-            # Send a test message to force API sync
             try:
                 await client.send_message(channel_id, f"Test message from {BOT_USERNAME} to sync interaction.")
                 logger.info(f"Test message sent to channel {channel_id} on attempt {attempt + 1}")
@@ -72,7 +68,7 @@ async def validate_channel(client, channel_id, user_id, require_admin=True):
         except PeerIdInvalid:
             logger.error(f"PEER_ID_INVALID for channel {channel_id} on attempt {attempt + 1}")
             if attempt < 2:
-                await asyncio.sleep(3)  # Wait before retry
+                await asyncio.sleep(3)
                 continue
             return False, "Invalid channel or bot hasn't interacted with this channel."
         except Exception as e:

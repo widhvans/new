@@ -35,7 +35,7 @@ class MediaManager:
             database_channels = await self.db.get_channels(user_id, "database")
             logger.info(f"Fetched database channels for user {user_id}: {database_channels}")
             if not database_channels:
-                await message.reply("No database channels set! Add one via 'Add Database Channel' and make me an admin. 🚫\nGo to 'See Database Channels' to verify your setup.")
+                await message.reply("No database channels set! Add one via 'Add Database Channel' and make me an admin. 🚫\nGo to 'See Database Channels' to verify.")
                 logger.warning(f"No database channels configured for user {user_id}")
                 return False
             if chat_id not in database_channels:
@@ -48,14 +48,14 @@ class MediaManager:
                         logger.error(f"Error fetching channel {channel_id} title: {e}")
                         channel_titles.append(f"Channel {channel_id}")
                 await message.reply(
-                    f"This chat is not a database channel. Please send media to one of your database channels: {', '.join(channel_titles)}. 📥\nCheck 'See Database Channels' to confirm.",
+                    f"This chat is not a database channel. Please send media to one of your database channels: {', '.join(channel_titles)}. 📥\nCheck 'See Database Channels'.",
                     reply_markup=InlineKeyboardMarkup(inline_keyboard=[
                         [InlineKeyboardButton(text="See Database Channels 🗄️", callback_data="see_database_channels")]
                     ])
                 )
                 logger.warning(f"Chat {chat_id} is not a database channel for user {user_id}. Configured channels: {database_channels}")
                 return False
-            logger.debug(f"Checking bot permissions in channel {chat_id}")
+            logger.debug(f"Checking bot permissions in database channel {chat_id}")
             if not await self.check_admin_status(bot, chat_id, bot.id):
                 await message.reply("I’m not an admin in this database channel or lack message read permissions. Make me an admin with full rights. 🚫")
                 logger.warning(f"Bot not admin or lacks permissions in database channel {chat_id} for user {user_id}")
@@ -98,7 +98,7 @@ class MediaManager:
                     "file_size": file_size,
                     "metadata": metadata
                 })
-                await message.reply("Media indexed and posted to your channels! ✅")
+                await message.reply("Media indexed and posted to your post channels! ✅")
                 logger.info(f"Completed indexing and posting for media {file_name} for user {user_id}")
                 return True
             else:
@@ -118,12 +118,13 @@ class MediaManager:
             shortener_enabled = settings.get("enable_shortlink", True)
             shortener_settings = await self.db.get_shortener(user_id)
             post_channels = await self.db.get_channels(user_id, "post")
-            logger.info(f"Post channels for user {user_id}: {post_channels}")
+            logger.info(f"Fetched post channels for user {user_id}: {post_channels}")
             if shortener_enabled and (not shortener_settings or not shortener_settings.get("url") or not shortener_settings.get("api")):
                 logger.warning(f"Invalid or missing shortener settings for user {user_id}. Using raw link.")
                 shortener_enabled = False
             if not post_channels:
                 logger.warning(f"No post channels configured for user {user_id}")
+                await bot.send_message(user_id, "No post channels set! Add one via 'Add Post Channel' to receive posts. 🚫")
                 return
 
             base_name = media_item["metadata"]["base_name"]
@@ -161,17 +162,20 @@ class MediaManager:
                 try:
                     if not await self.check_admin_status(bot, channel_id, bot.id):
                         logger.warning(f"Bot not admin in post channel {channel_id} for user {user_id}")
+                        await bot.send_message(user_id, f"I’m not an admin in post channel {channel_id}. Make me an admin to post media. 🚫")
                         continue
                     if poster_url and use_poster:
                         await bot.send_photo(channel_id, poster_url, caption=caption, reply_markup=keyboard, parse_mode="HTML")
-                        logger.info(f"Posted media {base_name} with poster to channel {channel_id} for user {user_id}")
+                        logger.info(f"Posted media {base_name} with poster to post channel {channel_id} for user {user_id}")
                     else:
                         await bot.send_message(channel_id, caption, reply_markup=keyboard, parse_mode="HTML")
-                        logger.info(f"Posted media {base_name} to channel {channel_id} for user {user_id}")
+                        logger.info(f"Posted media {base_name} to post channel {channel_id} for user {user_id}")
                 except Exception as e:
-                    logger.error(f"Failed to post media {base_name} to channel {channel_id} for user {user_id}: {e}")
+                    logger.error(f"Failed to post media {base_name} to post channel {channel_id} for user {user_id}: {e}")
+                    await bot.send_message(user_id, f"Failed to post media to channel {channel_id}. Check permissions or try again. 😕")
         except Exception as e:
             logger.error(f"Error posting media for user {user_id}: {e}")
+            await bot.send_message(user_id, "Failed to post media. Please contact support. 😕")
 
     async def check_admin_status(self, bot: Bot, channel_id: int, bot_id: int, retries=3, delay=2):
         logger.debug(f"Checking admin status for bot {bot_id} in channel {channel_id}")

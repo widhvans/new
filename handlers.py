@@ -100,10 +100,10 @@ async def get_main_menu(user_id: int):
     ])
     return keyboard
 
-async def test_shortener(shortener: Shortener, user_id: int):
+async def test_shortener(db: Database, shortener: Shortener, user_id: int):
     try:
         test_url = "https://example.com"
-        short_link = await shortener.get_shortlink(test_url, user_id)
+        short_link = await shortener.get_shortlink(db, test_url, user_id)
         if short_link and short_link.startswith("http"):
             return short_link
         logger.warning(f"Failed to generate test shortlink for user {user_id}")
@@ -370,7 +370,7 @@ def register_handlers(dp: Dispatcher, db: Database, shortener: Shortener, bot: B
             _, shortlink_url, api = message.text.split(" ")
             reply = await message.reply("<b>Please wait... ⏳</b>")
             await db_instance.save_shortener(user_id, shortlink_url, api)
-            test_link = await test_shortener(shortener, user_id)
+            test_link = await test_shortener(db_instance, shortener, user_id)
             test_status = f"Test Link: <code>{test_link}</code>\n" if test_link else "Test Link: Failed to generate, check API settings.\n"
             await reply.edit_text(
                 f"<b>Successfully added shortlink API for {title} ✅</b>\n\nCurrent shortlink website: <code>{shortlink_url}</code>\nCurrent API: <code>{api}</code>\n{test_status}",
@@ -468,7 +468,7 @@ def register_handlers(dp: Dispatcher, db: Database, shortener: Shortener, bot: B
             if not shortener_settings or not shortener_settings.get("url") or not shortener_settings.get("api"):
                 logger.warning(f"Invalid or missing shortener settings for user {user_id}")
                 return
-            short_link = await shortener.get_shortlink(raw_link, user_id)
+            short_link = await shortener.get_shortlink(db_instance, raw_link, user_id)
             if not short_link or not short_link.startswith("http"):
                 logger.warning(f"Invalid shortlink for media {file_name}, user {user_id}")
                 return
@@ -594,7 +594,7 @@ def register_handlers(dp: Dispatcher, db: Database, shortener: Shortener, bot: B
         try:
             _, shortlink_url, api = message.text.split(" ")
             await db_instance.save_shortener(user_id, shortlink_url, api)
-            test_link = await test_shortener(shortener, user_id)
+            test_link = await test_shortener(db_instance, shortener, user_id)
             test_status = f"Test Link: <code>{test_link}</code>\n" if test_link else "Test Link: Failed to generate, check API settings.\n"
             await message.reply(
                 f"Shortener set! ✅\nWebsite: <code>{shortlink_url}</code>\nAPI: <code>{api}</code>\n{test_status}",
@@ -621,7 +621,7 @@ def register_handlers(dp: Dispatcher, db: Database, shortener: Shortener, bot: B
             shortener = await db_instance.get_shortener(user_id)
             new_markup = await get_main_menu(user_id)
             if shortener:
-                test_link = await test_shortener(shortener, user_id)
+                test_link = await test_shortener(db_instance, shortener, user_id)
                 test_status = f"Test Link: <code>{test_link}</code>\n" if test_link else "Test Link: Failed to generate, check API settings.\n"
                 new_text = f"Current Shortener: 👀\nWebsite: <code>{shortener['url']}</code>\nAPI: <code>{shortener['api']}</code>\n{test_status}"
             else:
@@ -785,14 +785,15 @@ def register_handlers(dp: Dispatcher, db: Database, shortener: Shortener, bot: B
                 raise ValueError("Invalid token format")
             # Validate token by creating a temporary bot instance
             test_bot = Bot(token=token)
-            await test_bot.get_me()  # Verify token validity
-            await db_instance.save_clone_bot(user_id, token)
+            bot_info = await test_bot.get_me()
+            username = f"@{bot_info.username}" if bot_info.username else "Unknown"
+            await db_instance.save_clone_bot(user_id, token, username)
             await message.reply(
-                "Clone bot added successfully! ✅\nStart your clone bot with /start.",
+                f"Clone bot {username} added successfully! ✅\nStart your clone bot with /start.",
                 reply_markup=await get_main_menu(user_id)
             )
             await state.clear()
-            logger.info(f"Clone bot token saved and validated for user {user_id}")
+            logger.info(f"Clone bot {username} saved and validated for user {user_id}")
         except Exception as e:
             logger.error(f"Error adding clone bot for user {user_id}: {e}")
             await message.reply(f"Failed to add clone bot: {str(e)} 😕\nSend a valid token.", reply_markup=await get_main_menu(user_id))
@@ -806,7 +807,7 @@ def register_handlers(dp: Dispatcher, db: Database, shortener: Shortener, bot: B
             clone_bot = await db_instance.get_clone_bot(user_id)
             new_markup = await get_main_menu(user_id)
             if clone_bot:
-                new_text = f"Your Clone Bot: 🤖\nToken: <code>{clone_bot['token']}</code>\nStart it with /start."
+                new_text = f"Your Clone Bot: 🤖\nUsername: <code>{clone_bot['username']}</code>\nStart it with /start."
             else:
                 new_text = "No clone bots created yet! 🚫\nUse 'Add Clone Bot' to create one."
             current_text = getattr(callback.message, 'text', '')

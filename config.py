@@ -9,8 +9,8 @@ SHORTLINK_URL = "earn4link.in"
 SHORTLINK_API = "987ef01cfd538490d733c3341926742e779421e2"
 ENABLE_SHORTLINK = True
 BOT_USERNAME = "@Complete_jwshw_bot"
+ADMIN_IDS = [1938030055]  # Replace with actual admin IDs
 
-# Logging Configuration
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 for handler in logger.handlers[:]:

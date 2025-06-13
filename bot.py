@@ -1,37 +1,55 @@
 import asyncio
 import logging
+import os
+import sys
+import psutil
 from aiogram import Bot, Dispatcher
-from config import TOKEN
+from aiogram.fsm.storage.memory import MemoryStorage
+from config import BOT_TOKEN, BOT_USERNAME, MONGO_URI, logger
 from database import Database
 from shortener import Shortener
 from handlers import register_handlers
 
-async def main():
-    # Initialize logging
-    logging.basicConfig(level=logging.INFO)
-    logger = logging.getLogger(__name__)
-    logger.info("Bot started")
+def check_single_instance():
+    pid_file = "bot.pid"
+    if os.path.exists(pid_file):
+        with open(pid_file, "r") as f:
+            pid = int(f.read().strip())
+        if psutil.pid_exists(pid):
+            logger.error(f"Bot already running with PID {pid}. Exiting.")
+            sys.exit(1)
+    with open(pid_file, "w") as f:
+        f.write(str(os.getpid()))
 
-    # Initialize bot and dispatcher
-    bot = Bot(token=TOKEN)
-    dp = Dispatcher()
-
-    # Initialize database and shortener
-    db = Database()
-    await db.connect()
-    shortener = Shortener()
-
-    # Register handlers
-    register_handlers(dp, db, shortener, bot)
-
-    # Start polling
+async def start_bot(token: str):
     try:
-        await dp.start_polling(bot)
+        bot = Bot(token=token)
+        storage = MemoryStorage()
+        dp = Dispatcher(storage=storage)
+        db = Database(MONGO_URI)
+        shortener = Shortener()
+        register_handlers(dp, db, shortener, bot)
+        await bot.delete_webhook(drop_pending_updates=True)
+        await dp.start_polling(bot, allowed_updates=["message", "callback_query"])
+        logger.info(f"Bot started with token ending in {token[-4:]}")
     except Exception as e:
-        logger.error(f"Error in polling: {e}")
-    finally:
-        await db.disconnect()
-        await bot.session.close()
+        logger.error(f"Failed to start bot with token ending in {token[-4:]}: {e}")
+
+async def main():
+    check_single_instance()
+    logger.info("Starting main bot...")
+    await start_bot(BOT_TOKEN)
+    # Start clone bots
+    clone_bots = await Database(MONGO_URI).get_all_clone_bots()
+    tasks = [start_bot(clone['token']) for clone in clone_bots]
+    if tasks:
+        logger.info(f"Starting {len(tasks)} clone bots...")
+        await asyncio.gather(*tasks)
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        logger.info("Bot stopped by user")
+    except Exception as e:
+        logger.error(f"Failed to start bot: {e}", exc_info=True)

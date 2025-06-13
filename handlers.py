@@ -2,7 +2,7 @@ from aiogram import Dispatcher, types, Bot
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
-from aiogram.filters import Command, StateFilter, BaseFilter
+from aiogram.filters import Command, StateFilter
 import asyncio
 import logging
 from database import Database
@@ -25,18 +25,15 @@ class BotStates(StatesGroup):
     SEARCH = State()
     TOGGLE_SHORTENER = State()
 
-class MediaFilter(BaseFilter):
-    async def __call__(self, message: types.Message) -> bool:
-        content_type = message.content_type
-        logger.info(f"Received message with content_type: {content_type} from user {message.from_user.id} in chat {message.chat.id}")
-        return content_type in [types.ContentType.PHOTO, types.ContentType.VIDEO, types.ContentType.DOCUMENT]
-
 async def check_subscription(bot: Bot, user_id: int, channel_id: int):
     try:
         if not channel_id:
+            logger.info(f"No FSub channel set for user {user_id}, subscription check passed")
             return True
         member = await bot.get_chat_member(channel_id, user_id)
-        return member.status in ["member", "administrator", "creator"]
+        is_subscribed = member.status in ["member", "administrator", "creator"]
+        logger.info(f"Subscription check for user {user_id} in channel {channel_id}: {'subscribed' if is_subscribed else 'not subscribed'}")
+        return is_subscribed
     except Exception as e:
         logger.error(f"Error checking subscription for user {user_id} in channel {channel_id}: {e}")
         return False
@@ -50,7 +47,7 @@ def register_handlers(dp: Dispatcher, db: Database, shortener: Shortener, bot: B
     @dp.message(Command("start"))
     async def start_command(message: types.Message, state: FSMContext):
         user_id = message.from_user.id
-        logger.info(f"User {user_id} initiated /start")
+        logger.info(f"User {user_id} initiated /start in chat {message.chat.id}")
         await state.clear()
         await db.save_user(user_id)
         settings = await db.get_settings(user_id)
@@ -80,7 +77,7 @@ def register_handlers(dp: Dispatcher, db: Database, shortener: Shortener, bot: B
             "- Auto-post to your post channels\n"
             "- Search files with a clone bot\n"
             "- Use any shortener\n"
-            "Click 'Let's Begin!' to start! 🚀\n\nNote: Send media to your database channel, not here, to index it."
+            "Click 'Let's Begin!' to start! 🚀\n\nNote: Send media to your database channel (not here) to index it."
         )
         keyboard = InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="Let's Begin! ▶️", callback_data="main_menu")]
@@ -106,7 +103,7 @@ def register_handlers(dp: Dispatcher, db: Database, shortener: Shortener, bot: B
                 "- Auto-post to your post channels\n"
                 "- Search files with a clone bot\n"
                 "- Use any shortener\n"
-                "Click 'Let's Begin!' to start! 🚀\n\nNote: Send media to your database channel, not here, to index it."
+                "Click 'Let's Begin!' to start! 🚀\n\nNote: Send media to your database channel (not here) to index it."
             )
             keyboard = InlineKeyboardMarkup(inline_keyboard=[
                 [InlineKeyboardButton(text="Let's Begin! ▶️", callback_data="main_menu")]
@@ -386,12 +383,20 @@ def register_handlers(dp: Dispatcher, db: Database, shortener: Shortener, bot: B
             logger.error(f"Error setting shortlink for user {user_id}: {e}")
             await message.reply("Failed to set shortlink. Try again. 😕", reply_markup=await channel_manager.get_main_menu(user_id))
 
-    @dp.message(MediaFilter())
-    async def handle_media(message: types.Message):
+    @dp.message()
+    async def handle_message(message: types.Message):
         user_id = message.from_user.id
         chat_id = message.chat.id
-        logger.info(f"User {user_id} sent media in chat {chat_id}")
-        await media_manager.index_media(bot, user_id, chat_id, message)
+        logger.info(f"Received message from user {user_id} in chat {chat_id} with content_type: {message.content_type}")
+        try:
+            if message.content_type in ["photo", "video", "document"]:
+                logger.info(f"Detected media message from user {user_id} in chat {chat_id}")
+                await media_manager.index_media(bot, user_id, chat_id, message)
+            else:
+                logger.debug(f"Ignoring non-media message from user {user_id} in chat {chat_id}")
+        except Exception as e:
+            logger.error(f"Error handling message from user {user_id} in chat {chat_id}: {e}", exc_info=True)
+            await message.reply("Failed to process message. Try again or contact support. 😕")
 
     @dp.callback_query(lambda c: c.data == "total_files")
     async def show_total_files(callback: types.CallbackQuery):
@@ -408,6 +413,36 @@ def register_handlers(dp: Dispatcher, db: Database, shortener: Shortener, bot: B
         except Exception as e:
             logger.error(f"Error showing total files for user {user_id}: {e}")
             await callback.message.reply("Failed to fetch total files. Try again. 😕", reply_markup=await channel_manager.get_main_menu(user_id))
+
+    @dp.message(Command("debug_channels"))
+    async def debug_channels(message: types.Message):
+        user_id = message.from_user.id
+        logger.info(f"User {user_id} running /debug_channels")
+        try:
+            post_channels = await db.get_channels(user_id, "post")
+            database_channels = await db.get_channels(user_id, "database")
+            response = f"Debug Channels for User {user_id}:\n\n"
+            response += "Post Channels:\n"
+            for channel_id in post_channels:
+                try:
+                    channel = await bot.get_chat(channel_id)
+                    is_admin = await channel_manager.check_admin_status(bot, channel_id, bot.id)
+                    response += f"- {channel.title or 'Unnamed'} ({channel_id}): {'Admin' if is_admin else 'Not Admin'}\n"
+                except Exception as e:
+                    response += f"- {channel_id}: Error fetching details ({e})\n"
+            response += "\nDatabase Channels:\n"
+            for channel_id in database_channels:
+                try:
+                    channel = await bot.get_chat(channel_id)
+                    is_admin = await channel_manager.check_admin_status(bot, channel_id, bot.id)
+                    response += f"- {channel.title or 'Unnamed'} ({channel_id}): {'Admin' if is_admin else 'Not Admin'}\n"
+                except Exception as e:
+                    response += f"- {channel_id}: Error fetching details ({e})\n"
+            await message.reply(response)
+            logger.info(f"Displayed debug channels for user {user_id}: Post={post_channels}, Database={database_channels}")
+        except Exception as e:
+            logger.error(f"Error in /debug_channels for user {user_id}: {e}")
+            await message.reply("Failed to fetch channel details. Try again. 😕")
 
     @dp.message(Command("broadcast"))
     async def broadcast_command(message: types.Message, state: FSMContext):

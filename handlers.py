@@ -48,29 +48,34 @@ def register_handlers(dp: Dispatcher, db: Database, shortener: Shortener):
 
     @dp.message(Command("start"))
     async def start_command(message: types.Message):
-        logger.info(f"User {message.from_user.id} initiated /start")
-        args = message.get_args().split("_")
-        if len(args) == 3 and args[0] == "connect":
+        user_id = message.from_user.id
+        logger.info(f"User {user_id} initiated /start")
+        # Parse command arguments
+        args = message.text.split()[1:] if len(message.text.split()) > 1 else []
+        if args and args[0].startswith("connect_"):
             try:
-                channel_id = int(args[1])
-                channel_type = args[2]
+                parts = args[0].split("_")
+                if len(parts) != 3:
+                    raise ValueError("Invalid connect format")
+                channel_id = int(parts[1])
+                channel_type = parts[2]
                 if channel_type not in ["post", "database"]:
                     raise ValueError("Invalid channel type")
                 chat = await message.bot.get_chat(channel_id)
                 channel_name = chat.title or "Unnamed Channel"
-                channels = await db.get_channels(message.from_user.id, channel_type)
+                channels = await db.get_channels(user_id, channel_type)
                 if len(channels) >= 5:
                     await message.reply(f"Max 5 {channel_type} channels allowed! 🚫")
-                    logger.warning(f"User {message.from_user.id} exceeded {channel_type} channel limit")
+                    logger.warning(f"User {user_id} exceeded {channel_type} channel limit")
                     return
-                await db.save_channel(message.from_user.id, channel_type, channel_id)
+                await db.save_channel(user_id, channel_type, channel_id)
                 await message.reply(f"Channel {channel_name} connected as {channel_type} channel! ✅")
-                logger.info(f"User {message.from_user.id} connected {channel_type} channel {channel_id} ({channel_name})")
+                logger.info(f"User {user_id} connected {channel_type} channel {channel_id} ({channel_name})")
             except ValueError as e:
-                logger.warning(f"Invalid /start connect args for user {message.from_user.id}: {args}")
+                logger.warning(f"Invalid /start connect args for user {user_id}: {args}")
                 await message.reply("Invalid connection request. Please try again. 😕")
             except Exception as e:
-                logger.error(f"Error connecting channel for user {message.from_user.id}: {e}")
+                logger.error(f"Error connecting channel for user {user_id}: {e}")
                 await message.reply("Failed to connect channel. Please try again. 😕")
             return
 
@@ -85,13 +90,14 @@ def register_handlers(dp: Dispatcher, db: Database, shortener: Shortener):
         ])
         try:
             await message.reply(welcome_msg, reply_markup=keyboard)
-            logger.info(f"Sent start message to user {message.from_user.id}")
+            logger.info(f"Sent start message to user {user_id}")
         except Exception as e:
-            logger.error(f"Failed to send start message to user {message.from_user.id}: {e}")
+            logger.error(f"Failed to send start message to user {user_id}: {e}")
 
     @dp.callback_query(lambda c: c.data == "main_menu")
     async def show_main_menu(callback: types.CallbackQuery):
-        logger.info(f"User {callback.from_user.id} requested main menu")
+        user_id = callback.from_user.id
+        logger.info(f"User {user_id} requested main menu")
         new_text = "Choose an option: 🛠️"
         current_text = getattr(callback.message, 'text', '')
         current_markup = getattr(callback.message, 'reply_markup', None)
@@ -99,32 +105,32 @@ def register_handlers(dp: Dispatcher, db: Database, shortener: Shortener):
         try:
             if current_text != new_text or current_markup != new_markup:
                 await callback.message.edit_text(new_text, reply_markup=new_markup)
-                logger.info(f"Displayed main menu for user {callback.from_user.id}")
+                logger.info(f"Displayed main menu for user {user_id}")
             await callback.answer()
         except Exception as e:
-            logger.error(f"Failed to show main menu for user {callback.from_user.id}: {e}")
+            logger.error(f"Failed to show main menu for user {user_id}: {e}")
 
     @dp.chat_member(ChatMemberUpdatedFilter(member_status_changed=IS_ADMIN))
     async def on_admin_status_change(chat_member: ChatMemberUpdated):
-        logger.info(f"Bot admin status changed in chat {chat_member.chat.id}")
+        channel_id = chat_member.chat.id
+        logger.info(f"Bot admin status changed in chat {channel_id}")
         try:
             bot_id = chat_member.bot.id
             if chat_member.new_chat_member.user.id != bot_id:
-                logger.info(f"Ignoring non-bot admin update in chat {chat_member.chat.id}")
+                logger.info(f"Ignoring non-bot admin update in chat {channel_id}")
                 return
             if chat_member.new_chat_member.status not in ["administrator", "creator"]:
-                logger.info(f"Bot demoted in chat {chat_member.chat.id}")
+                logger.info(f"Bot demoted in chat {channel_id}")
                 return
             user_id = chat_member.from_user.id
-            channel_id = chat_member.chat.id
             channel_name = chat_member.chat.title or "Unnamed Channel"
-            # Send in-channel notification with PM button
-            pm_link = await create_start_link(chat_member.bot, f"connect_{channel_id}_post", encode=True)
-            keyboard = InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text="Connect as Post Channel 📢", url=pm_link)]
-            ])
+            # Send in-channel notification with PM buttons
+            pm_link_post = await create_start_link(chat_member.bot, f"connect_{channel_id}_post", encode=True)
             pm_link_db = await create_start_link(chat_member.bot, f"connect_{channel_id}_database", encode=True)
-            keyboard.inline_keyboard.append([InlineKeyboardButton(text="Connect as Database Channel 🗄️", url=pm_link_db)])
+            keyboard = InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="Connect as Post Channel 📢", url=pm_link_post)],
+                [InlineKeyboardButton(text="Connect as Database Channel 🗄️", url=pm_link_db)]
+            ])
             await chat_member.bot.send_message(
                 channel_id,
                 f"Bot connected to {channel_name}! Click below to confirm in PM with {BOT_USERNAME}. ✅",
@@ -132,7 +138,7 @@ def register_handlers(dp: Dispatcher, db: Database, shortener: Shortener):
             )
             logger.info(f"Sent admin connection notification in channel {channel_id} for user {user_id}")
         except Exception as e:
-            logger.error(f"Error handling admin status change in chat {chat_member.chat.id}: {e}")
+            logger.error(f"Error handling admin status change in chat {channel_id}: {e}")
 
     @dp.message(Command("shortlink"))
     async def shortlink_command(message: types.Message):
@@ -152,11 +158,11 @@ def register_handlers(dp: Dispatcher, db: Database, shortener: Shortener):
 
             _, shortlink_url, api = message.text.split(" ")
             reply = await message.reply("<b>Please wait... ⏳</b>")
-            await db.save_shortener(grp_id, shortlink_url, api)
+            await db.save_shortener(user_id, shortlink_url, api)
             await reply.edit_text(
                 f"<b>Successfully added shortlink API for {title} ✅\n\nCurrent shortlink website: <code>{shortlink_url}</code>\nCurrent API: <code>{api}</code>.</b>"
             )
-            logger.info(f"Shortlink set for chat {grp_id} by user {user_id}")
+            logger.info(f"Shortlink set for user {user_id}")
         except ValueError:
             await message.reply(
                 f"<b>Hey {message.from_user.mention}, command incomplete 😕\n\nUse proper format!\n\n<code>/shortlink mdisk.link b6d97f6s96ds69d69d68d575d</code></b>"
@@ -192,9 +198,9 @@ def register_handlers(dp: Dispatcher, db: Database, shortener: Shortener):
 
             # Check shortener configuration
             shortener_settings = await db.get_shortener(user_id)
-            if not shortener_settings:
-                logger.warning(f"No shortener settings for user {user_id}")
-                await message.reply("No shortener set! Please configure via 'Set Shortener'. Indexing skipped. ⚠️")
+            if not shortener_settings or not shortener_settings.get("url") or not shortener_settings.get("api"):
+                logger.warning(f"Invalid or missing shortener settings for user {user_id}")
+                await message.reply("No valid shortener set! Please configure via 'Set Shortener'. Indexing skipped. ⚠️")
                 return
 
             # Check post channels
@@ -229,16 +235,16 @@ def register_handlers(dp: Dispatcher, db: Database, shortener: Shortener):
                 await message.reply("Unsupported media type. Please send a photo, video, or document. 😕")
                 return
 
-            if file_id and file_name:
+            if file_id and file_name and file_size is not None:
                 raw_link = f"telegram://file/{file_id}"
                 # Save media to database
                 await db.save_media(user_id, media_type, file_id, file_name, raw_link, file_size)
-                logger.info(f"Indexed media {file_name} (type: {media_type}, size: {file_size}) for user {user_id} in chat {chat_id}")
+                logger.info(f"Indexed media {file_name} (type: {media_type}, size: {file_size} bytes) for user {user_id} in chat {chat_id}")
                 # Schedule posting
-                asyncio.create_task(post_media_with_delay(dp.bot, user_id, file_name, raw_link, chat_id))
+                asyncio.create_task(post_media_with_delay(dp.bot, user_id, file_name, raw_link, user_id))
                 await message.reply("Media indexed! Will post to your channels shortly. ✅")
             else:
-                logger.warning(f"Invalid media details (file_id: {file_id}, file_name: {file_name}) from user {user_id}")
+                logger.warning(f"Invalid media details (file_id: {file_id}, file_name: {file_name}, file_size: {file_size}) from user {user_id}")
                 await message.reply("Invalid media file. Please try again. 😕")
         except Exception as e:
             logger.error(f"Error indexing media for user {user_id} in chat {chat_id}: {e}")
@@ -246,18 +252,18 @@ def register_handlers(dp: Dispatcher, db: Database, shortener: Shortener):
 
     async def post_media_with_delay(bot, user_id, file_name, raw_link, chat_id):
         try:
-            logger.info(f"Scheduling delayed post for media {file_name} for user {user_id} in chat {chat_id}")
+            logger.info(f"Scheduling delayed post for media {file_name} for user {user_id}")
             await asyncio.sleep(20)  # Delay to ensure file is processed
             await post_media(bot, user_id, file_name, raw_link, chat_id)
         except Exception as e:
             logger.error(f"Error in delayed post_media for user {user_id}: {e}")
 
     async def post_media(bot, user_id, file_name, raw_link, chat_id):
-        logger.info(f"Posting media {file_name} for user {user_id} from chat {chat_id}")
+        logger.info(f"Posting media {file_name} for user {user_id}")
         try:
             shortener_settings = await db.get_shortener(user_id)
-            if not shortener_settings:
-                logger.warning(f"No shortener settings for user {user_id}")
+            if not shortener_settings or not shortener_settings.get("url") or not shortener_settings.get("api"):
+                logger.warning(f"Invalid or missing shortener settings for user {user_id}")
                 return
             short_link = await shortener.get_shortlink(raw_link, user_id)
             if not short_link or not short_link.startswith("http"):
@@ -356,16 +362,17 @@ def register_handlers(dp: Dispatcher, db: Database, shortener: Shortener):
 
     @dp.callback_query(lambda c: c.data == "set_shortener")
     async def set_shortener(callback: types.CallbackQuery, state: FSMContext):
-        logger.info(f"User {callback.from_user.id} setting shortener")
+        user_id = callback.from_user.id
+        logger.info(f"User {user_id} setting shortener")
         try:
             await state.set_state(BotStates.SET_SHORTENER)
             await callback.message.edit_text(
                 "Send the shortener details in format: <code>shortlink mdisk.link your_api_key</code> 🔗"
             )
             await callback.answer()
-            logger.info(f"Prompted user {callback.from_user.id} to set shortener")
+            logger.info(f"Prompted user {user_id} to set shortener")
         except Exception as e:
-            logger.error(f"Error prompting shortener setup for user {callback.from_user.id}: {e}")
+            logger.error(f"Error prompting shortener setup for user {user_id}: {e}")
 
     @dp.message(StateFilter(BotStates.SET_SHORTENER))
     async def process_shortener(message: types.Message, state: FSMContext):
@@ -413,16 +420,17 @@ def register_handlers(dp: Dispatcher, db: Database, shortener: Shortener):
 
     @dp.callback_query(lambda c: c.data == "set_backup_link")
     async def set_backup_link(callback: types.CallbackQuery, state: FSMContext):
-        logger.info(f"User {callback.from_user.id} setting backup link")
+        user_id = callback.from_user.id
+        logger.info(f"User {user_id} setting backup link")
         try:
             await state.set_state(BotStates.SET_BACKUP_LINK)
             await callback.message.edit_text(
                 "Please send the backup link URL. 🔄"
             )
             await callback.answer()
-            logger.info(f"Prompted user {callback.from_user.id} to set backup link")
+            logger.info(f"Prompted user {user_id} to set backup link")
         except Exception as e:
-            logger.error(f"Error prompting backup link setup for user {callback.from_user.id}: {e}")
+            logger.error(f"Error prompting backup link setup for user {user_id}: {e}")
 
     @dp.message(StateFilter(BotStates.SET_BACKUP_LINK))
     async def process_backup_link(message: types.Message, state: FSMContext):
@@ -445,16 +453,17 @@ def register_handlers(dp: Dispatcher, db: Database, shortener: Shortener):
 
     @dp.callback_query(lambda c: c.data == "set_how_to_download")
     async def set_how_to_download(callback: types.CallbackQuery, state: FSMContext):
-        logger.info(f"User {callback.from_user.id} setting how to download")
+        user_id = callback.from_user.id
+        logger.info(f"User {user_id} setting how to download")
         try:
             await state.set_state(BotStates.SET_HOW_TO_DOWNLOAD)
             await callback.message.edit_text(
                 "Please send the 'How to Download' tutorial URL. 📖"
             )
             await callback.answer()
-            logger.info(f"Prompted user {callback.from_user.id} to set how to download")
+            logger.info(f"Prompted user {user_id} to set how to download")
         except Exception as e:
-            logger.error(f"Error prompting how to download setup for user {callback.from_user.id}: {e}")
+            logger.error(f"Error prompting how to download setup for user {user_id}: {e}")
 
     @dp.message(StateFilter(BotStates.SET_HOW_TO_DOWNLOAD))
     async def process_how_to_download(message: types.Message, state: FSMContext):

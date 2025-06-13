@@ -43,6 +43,7 @@ def register_handlers(dp: Dispatcher, db: Database, shortener: Shortener, bot: B
     media_manager = MediaManager(db, shortener)
     search_manager = SearchManager(db, shortener)
     admin_manager = AdminManager(db)
+    last_message = {}  # Store last message for debugging
 
     @dp.message(Command("start"))
     async def start_command(message: types.Message, state: FSMContext):
@@ -383,11 +384,16 @@ def register_handlers(dp: Dispatcher, db: Database, shortener: Shortener, bot: B
             logger.error(f"Error setting shortlink for user {user_id}: {e}")
             await message.reply("Failed to set shortlink. Try again. 😕", reply_markup=await channel_manager.get_main_menu(user_id))
 
-    @dp.message(lambda message: message.chat.type in ["group", "supergroup", "channel"])
-    async def handle_group_channel_message(message: types.Message):
+    @dp.message()
+    async def handle_message(message: types.Message):
         user_id = message.from_user.id if message.from_user else None
         chat_id = message.chat.id
-        logger.info(f"Received message in group/channel {chat_id} from user {user_id or 'anonymous'} with content_type: {message.content_type}")
+        last_message[user_id] = {
+            "chat_id": chat_id,
+            "content_type": message.content_type,
+            "timestamp": datetime.utcnow().isoformat()
+        }
+        logger.info(f"Received message in chat {chat_id} from user {user_id or 'anonymous'} with content_type: {message.content_type}")
         try:
             if not user_id:
                 logger.debug(f"Anonymous message in chat {chat_id}, skipping")
@@ -398,14 +404,8 @@ def register_handlers(dp: Dispatcher, db: Database, shortener: Shortener, bot: B
             else:
                 logger.debug(f"Ignoring non-media message in chat {chat_id} from user {user_id}")
         except Exception as e:
-            logger.error(f"Error handling group/channel message in chat {chat_id} from user {user_id}: {e}", exc_info=True)
+            logger.error(f"Error handling message in chat {chat_id} from user {user_id}: {e}", exc_info=True)
             await message.reply("Failed to process message. Try again or contact support. 😕")
-
-    @dp.message()
-    async def handle_non_group_message(message: types.Message):
-        user_id = message.from_user.id
-        chat_id = message.chat.id
-        logger.debug(f"Ignoring message in non-group/channel chat {chat_id} from user {user_id} with content_type: {message.content_type}")
 
     @dp.callback_query(lambda c: c.data == "total_files")
     async def show_total_files(callback: types.CallbackQuery):
@@ -483,13 +483,75 @@ def register_handlers(dp: Dispatcher, db: Database, shortener: Shortener, bot: B
             if not database_channels:
                 await message.reply("No database channels set! Add one via 'Add Database Channel'. 🚫")
                 return
-            # Simulate indexing in the first database channel
             chat_id = database_channels[0]
             logger.info(f"Simulating media indexing for user {user_id} in database channel {chat_id}")
             await media_manager.index_media(bot, user_id, chat_id, message)
         except Exception as e:
             logger.error(f"Error in /test_index for user {user_id}: {e}")
             await message.reply("Failed to test indexing. Try again or contact support. 😕")
+
+    @dp.message(Command("debug_message"))
+    async def debug_message(message: types.Message):
+        user_id = message.from_user.id
+        logger.info(f"User {user_id} running /debug_message")
+        try:
+            msg_info = last_message.get(user_id, {})
+            if not msg_info:
+                await message.reply("No recent messages received. Send a message to a database channel first. 😕")
+                return
+            response = f"Last Message Debug for User {user_id}:\n\n"
+            response += f"Chat ID: {msg_info.get('chat_id', 'Unknown')}\n"
+            response += f"Content Type: {msg_info.get('content_type', 'Unknown')}\n"
+            response += f"Timestamp: {msg_info.get('timestamp', 'Unknown')}\n"
+            await message.reply(response)
+            logger.info(f"Displayed last message debug for user {user_id}: {msg_info}")
+        except Exception as e:
+            logger.error(f"Error in /debug_message for user {user_id}: {e}")
+            await message.reply("Failed to fetch message details. Try again. 😕")
+
+    @dp.message(Command("debug_permissions"))
+    async def debug_permissions(message: types.Message):
+        user_id = message.from_user.id
+        logger.info(f"User {user_id} running /debug_permissions")
+        try:
+            post_channels = await db.get_channels(user_id, "post")
+            database_channels = await db.get_channels(user_id, "database")
+            response = f"Permissions Debug for User {user_id}:\n\n"
+            response += "Post Channels:\n"
+            for channel_id in post_channels:
+                try:
+                    channel = await bot.get_chat(channel_id)
+                    member = await bot.get_chat_member(channel_id, bot.id)
+                    can_post = member.can_post_messages if hasattr(member, "can_post_messages") else False
+                    response += f"- {channel.title or 'Unnamed'} ({channel_id}): Can Post Messages={'Yes' if can_post else 'No'}\n"
+                except Exception as e:
+                    response += f"- {channel_id}: Error fetching permissions ({e})\n"
+            response += "\nDatabase Channels:\n"
+            for channel_id in database_channels:
+                try:
+                    channel = await bot.get_chat(channel_id)
+                    member = await bot.get_chat_member(channel_id, bot.id)
+                    can_read = member.can_read_messages if hasattr(member, "can_read_messages") else True
+                    response += f"- {channel.title or 'Unnamed'} ({channel_id}): Can Read Messages={'Yes' if can_read else 'No'}\n"
+                except Exception as e:
+                    response += f"- {channel_id}: Error fetching permissions ({e})\n"
+            await message.reply(response)
+            logger.info(f"Displayed permissions debug for user {user_id}")
+        except Exception as e:
+            logger.error(f"Error in /debug_permissions for user {user_id}: {e}")
+            await message.reply("Failed to fetch permissions. Try again. 😕")
+
+    @dp.message(Command("clear_media"))
+    async def clear_media(message: types.Message):
+        user_id = message.from_user.id
+        logger.info(f"User {user_id} running /clear_media")
+        try:
+            await db.db.media.delete_many({"user_id": user_id})
+            await message.reply("All media files cleared from database! ✅")
+            logger.info(f"Cleared media for user {user_id}")
+        except Exception as e:
+            logger.error(f"Error in /clear_media for user {user_id}: {e}")
+            await message.reply("Failed to clear media. Try again. 😕")
 
     @dp.message(Command("broadcast"))
     async def broadcast_command(message: types.Message, state: FSMContext):

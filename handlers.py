@@ -1,8 +1,8 @@
 from aiogram import Dispatcher, types, Bot
-from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, ChatMemberUpdated
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
-from aiogram.filters import Command, StateFilter, BaseFilter, ChatMemberUpdatedFilter, IS_ADMIN
+from aiogram.filters import Command, StateFilter, BaseFilter
 import asyncio
 import logging
 from database import Database
@@ -22,15 +22,6 @@ class BotStates(StatesGroup):
 class MediaFilter(BaseFilter):
     async def __call__(self, message: types.Message) -> bool:
         return message.content_type in [types.ContentType.PHOTO, types.ContentType.VIDEO, types.ContentType.DOCUMENT]
-
-class BotAdminFilter(ChatMemberUpdatedFilter):
-    def __init__(self):
-        super().__init__(member_status_changed=IS_ADMIN)
-    
-    async def __call__(self, update: ChatMemberUpdated, bot: Bot) -> bool:
-        if update.new_chat_member.user.id != bot.id:
-            return False
-        return True
 
 def get_main_menu():
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
@@ -135,33 +126,47 @@ async def preload_chats(bot: Bot):
                             logger.error(f"Failed to verify channel {channel_id} after {retries} attempts, keeping in database")
     logger.info("Channel preloading completed")
 
+async def scan_recent_chats(bot: Bot, state_storage: dict):
+    logger.info("Starting recent chats scanner...")
+    offset = None
+    while True:
+        try:
+            updates = await bot.get_updates(offset=offset, timeout=10, allowed_updates=["message", "chat_member"])
+            for update in updates:
+                offset = update.update_id + 1
+                channel_id = None
+                user_id = None
+                if update.message and update.message.chat.type in ["channel", "supergroup"]:
+                    channel_id = update.message.chat.id
+                    user_id = update.message.from_user.id
+                elif update.chat_member:
+                    channel_id = update.chat_member.chat.id
+                    user_id = update.chat_member.from_user.id
+                if channel_id and user_id:
+                    logger.info(f"Found recent activity in channel {channel_id} by user {user_id}")
+                    state = FSMContext(storage=state_storage, key=(user_id, user_id))
+                    user_state = await state.get_state()
+                    channel_type = None
+                    if user_state == BotStates.SET_POST_CHANNEL.state:
+                        channel_type = "post"
+                    elif user_state == BotStates.SET_DATABASE_CHANNEL.state:
+                        channel_type = "database"
+                    if not channel_type:
+                        logger.info(f"No active connection state for user {user_id} in channel {channel_id}")
+                        continue
+                    if await check_admin_status(bot, channel_id, bot.id):
+                        await connect_channel(bot, user_id, channel_id, channel_type, state)
+        except Exception as e:
+            logger.error(f"Error scanning recent chats: {e}")
+        await asyncio.sleep(5)
+
 def register_handlers(dp: Dispatcher, db: Database, shortener: Shortener, bot: Bot):
     global db_instance
     db_instance = db
     ADMINS = [123456789]  # Replace with actual admin IDs
 
-    @dp.chat_member(BotAdminFilter())
-    async def on_bot_added(update: ChatMemberUpdated, state: FSMContext, bot: Bot):
-        channel_id = update.chat.id
-        user_id = update.from_user.id
-        logger.info(f"Bot added/promoted to admin in channel {channel_id} by user {user_id}")
-        try:
-            if update.chat.type not in ["channel", "supergroup"]:
-                logger.info(f"Ignoring non-channel update in chat {channel_id}")
-                return
-            user_state = await state.get_state()
-            channel_type = None
-            if user_state == BotStates.SET_POST_CHANNEL.state:
-                channel_type = "post"
-            elif user_state == BotStates.SET_DATABASE_CHANNEL.state:
-                channel_type = "database"
-            if not channel_type:
-                logger.info(f"No active connection state for user {user_id} in channel {channel_id}")
-                return
-            if await check_admin_status(bot, channel_id, bot.id):
-                await connect_channel(bot, user_id, channel_id, channel_type, state)
-        except Exception as e:
-            logger.error(f"Error handling bot addition in channel {channel_id}: {e}")
+    # Start background chat scanner
+    asyncio.create_task(scan_recent_chats(bot, dp.storage))
 
     @dp.message(Command("start"))
     async def start_command(message: types.Message, state: FSMContext):

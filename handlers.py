@@ -23,14 +23,22 @@ class MediaFilter(BaseFilter):
 
 def get_main_menu():
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="Add Post Channel", callback_data="add_post_channel")],
-        [InlineKeyboardButton(text="Add Database Channel", callback_data="add_database_channel")],
-        [InlineKeyboardButton(text="Set Shortener", callback_data="set_shortener")],
-        [InlineKeyboardButton(text="See Shortener", callback_data="see_shortener")],
-        [InlineKeyboardButton(text="Set Backup Link", callback_data="set_backup_link")],
-        [InlineKeyboardButton(text="Set How to Download", callback_data="set_how_to_download")],
-        [InlineKeyboardButton(text="Total Files", callback_data="total_files")],
-        [InlineKeyboardButton(text="Clone Search", callback_data="clone_search")]
+        [
+            InlineKeyboardButton(text="📢 Add Post Channel", callback_data="add_post_channel"),
+            InlineKeyboardButton(text="🗄 Add Database Channel", callback_data="add_database_channel")
+        ],
+        [
+            InlineKeyboardButton(text="🔗 Set Shortener", callback_data="set_shortener"),
+            InlineKeyboardButton(text="👀 See Shortener", callback_data="see_shortener")
+        ],
+        [
+            InlineKeyboardButton(text="🔄 Set Backup Link", callback_data="set_backup_link"),
+            InlineKeyboardButton(text="📖 Set How to Download", callback_data="set_how_to_download")
+        ],
+        [
+            InlineKeyboardButton(text="📊 Total Files", callback_data="total_files"),
+            InlineKeyboardButton(text="🔍 Clone Search", callback_data="clone_search")
+        ]
     ])
     return keyboard
 
@@ -42,23 +50,30 @@ def register_handlers(dp: Dispatcher, db: Database, shortener: Shortener):
         welcome_msg = (
             "Welcome to your personal storage bot! 📦\n"
             "I can save your media, auto-post to channels, and more.\n"
-            "Let's get started!"
+            "Let's get started! 🚀"
         )
         keyboard = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="Let's Begin", callback_data="main_menu")]
+            [InlineKeyboardButton(text="Let's Begin! ▶️", callback_data="main_menu")]
         ])
         await message.reply(welcome_msg, reply_markup=keyboard)
 
     @dp.callback_query(lambda c: c.data == "main_menu")
     async def show_main_menu(callback: types.CallbackQuery):
-        await callback.message.edit_text("Choose an option:", reply_markup=get_main_menu())
+        new_text = "Choose an option: 🛠️"
+        current_text = getattr(callback.message, 'text', '')
+        current_markup = getattr(callback.message, 'reply_markup', None)
+        new_markup = get_main_menu()
+        if current_text != new_text or current_markup != new_markup:
+            await callback.message.edit_text(new_text, reply_markup=new_markup)
+        await callback.answer()
 
     @dp.callback_query(lambda c: c.data == "add_post_channel")
     async def add_post_channel(callback: types.CallbackQuery, state: FSMContext):
         await state.set_state(BotStates.SET_POST_CHANNEL)
         await callback.message.edit_text(
-            "Please add me as an admin to your post channel and forward a message from that channel."
+            "Please add me as an admin to your post channel and forward a message from that channel. 📢"
         )
+        await callback.answer()
 
     @dp.message(StateFilter(BotStates.SET_POST_CHANNEL))
     async def process_post_channel(message: types.Message, state: FSMContext):
@@ -66,21 +81,22 @@ def register_handlers(dp: Dispatcher, db: Database, shortener: Shortener):
             channel_id = message.forward_from_chat.id
             channels = await db.get_channels(message.from_user.id, "post")
             if len(channels) >= 5:
-                await message.reply("Max 5 post channels allowed!")
+                await message.reply("Max 5 post channels allowed! 🚫")
                 await state.clear()
                 return
             await db.save_channel(message.from_user.id, "post", channel_id)
-            await message.reply("Post channel connected! Add more or go back.", reply_markup=get_main_menu())
+            await message.reply("Post channel connected! ✅ Add more or go back.", reply_markup=get_main_menu())
             await state.clear()
         else:
-            await message.reply("Please forward a message from a channel.")
+            await message.reply("Please forward a message from a channel. 🔄")
 
     @dp.callback_query(lambda c: c.data == "add_database_channel")
     async def add_database_channel(callback: types.CallbackQuery, state: FSMContext):
         await state.set_state(BotStates.SET_DATABASE_CHANNEL)
         await callback.message.edit_text(
-            "Please add me as an admin to your database channel and forward a message from that channel."
+            "Please add me as an admin to your database channel and forward a message from that channel. 🗄️"
         )
+        await callback.answer()
 
     @dp.message(StateFilter(BotStates.SET_DATABASE_CHANNEL))
     async def process_database_channel(message: types.Message, state: FSMContext):
@@ -88,38 +104,38 @@ def register_handlers(dp: Dispatcher, db: Database, shortener: Shortener):
             channel_id = message.forward_from_chat.id
             channels = await db.get_channels(message.from_user.id, "database")
             if len(channels) >= 5:
-                await message.reply("Max 5 database channels allowed!")
+                await message.reply("Max 5 database channels allowed! 🚫")
                 await state.clear()
                 return
             await db.save_channel(message.from_user.id, "database", channel_id)
-            await message.reply("Database channel connected! Add more or go back.", reply_markup=get_main_menu())
+            await message.reply("Database channel connected! ✅ Add more or go back.", reply_markup=get_main_menu())
             await state.clear()
         else:
-            await message.reply("Please forward a message from a channel.")
+            await message.reply("Please forward a message from a channel. 🔄")
 
     @dp.message(Command("shortlink"))
     async def shortlink_command(message: types.Message):
         userid = message.from_user.id
         chat_type = message.chat.type
-        grp_id = userid if chat_type == types.ChatType.PRIVATE else message.chat.id
-        title = "PM" if chat_type == types.ChatType.PRIVATE else message.chat.title
+        grp_id = userid if chat_type == "private" else message.chat.id
+        title = "PM" if chat_type == "private" else message.chat.title
 
-        if chat_type != types.ChatType.PRIVATE:
+        if chat_type != "private":
             member = await message.bot.get_chat_member(grp_id, userid)
             if member.status not in ["administrator", "creator"] and str(userid) not in ADMINS:
-                return await message.reply("<b>You don't have access to this command!</b>")
+                return await message.reply("<b>You don't have access to this command! 🚫</b>")
 
         try:
             _, shortlink_url, api = message.text.split(" ")
         except ValueError:
             return await message.reply(
-                f"<b>Hey {message.from_user.mention}, command incomplete :(\n\nUse proper format!\n\nFormat:\n\n<code>/shortlink mdisk.link b6d97f6s96ds69d69d68d575d</code></b>"
+                f"<b>Hey {message.from_user.mention}, command incomplete 😕\n\nUse proper format!\n\nFormat:\n\n<code>/shortlink mdisk.link b6d97f6s96ds69d69d68d575d</code></b>"
             )
 
-        reply = await message.reply("<b>Please wait...</b>")
+        reply = await message.reply("<b>Please wait... ⏳</b>")
         await db.save_shortener(grp_id, shortlink_url, api)
         await reply.edit_text(
-            f"<b>Successfully added shortlink API for {title}\n\nCurrent shortlink website: <code>{shortlink_url}</code>\nCurrent API: <code>{api}</code>.</b>"
+            f"<b>Successfully added shortlink API for {title} ✅\n\nCurrent shortlink website: <code>{shortlink_url}</code>\nCurrent API: <code>{api}</code>.</b>"
         )
 
     @dp.message(MediaFilter())
@@ -161,12 +177,12 @@ def register_handlers(dp: Dispatcher, db: Database, shortener: Shortener):
         poster_url = await fetch_poster(file_name)
 
         keyboard = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="Download", url=short_link)]
+            [InlineKeyboardButton(text="Download 📥", url=short_link)]
         ])
         if backup_link:
-            keyboard.inline_keyboard.append([InlineKeyboardButton(text="Backup Link", url=backup_link)])
+            keyboard.inline_keyboard.append([InlineKeyboardButton(text="Backup Link 🔄", url=backup_link)])
         if how_to_download:
-            keyboard.inline_keyboard.append([InlineKeyboardButton(text="How to Download", url=how_to_download)])
+            keyboard.inline_keyboard.append([InlineKeyboardButton(text="How to Download ❓", url=how_to_download)])
 
         for channel_id in post_channels:
             if poster_url:
@@ -181,20 +197,19 @@ def register_handlers(dp: Dispatcher, db: Database, shortener: Shortener):
     async def show_total_files(callback: types.CallbackQuery):
         user_id = callback.from_user.id
         media_files = await db.get_user_media(user_id)
-        await callback.message.edit_text(f"Total files: {len(media_files)}", reply_markup=get_main_menu())
-
-    @dp.callback_query(lambda c: c.data == "clone_search")
-    async def clone_search_bot(callback: types.CallbackQuery):
-        await callback.message.edit_text(
-            "Clone search bot activated! Search for files in PM or connected groups.",
-            reply_markup=get_main_menu()
-        )
+        new_text = f"Total files: {len(media_files)} 📊"
+        current_text = getattr(callback.message, 'text', '')
+        current_markup = getattr(callback.message, 'reply_markup', None)
+        new_markup = get_main_menu()
+        if current_text != new_text or current_markup != new_markup:
+            await callback.message.edit_text(new_text, reply_markup=new_markup)
+        await callback.answer()
 
     @dp.message(Command("broadcast"))
     async def broadcast_command(message: types.Message):
         if message.from_user.id not in ADMINS:
             return
-        await message.reply("Send the broadcast message.")
+        await message.reply("Send the broadcast message. 📢")
 
     @dp.message(Command("stats"))
     async def stats_command(message: types.Message):
@@ -202,14 +217,15 @@ def register_handlers(dp: Dispatcher, db: Database, shortener: Shortener):
             return
         total_users = await db.db.users.count_documents({})
         total_db_owners = await db.db.channels.count_documents({"channel_type": "database"})
-        await message.reply(f"Users: {total_users}\nDatabase Owners: {total_db_owners}")
+        await message.reply(f"Users: {total_users}\nDatabase Owners: {total_db_owners} 📈")
 
     @dp.callback_query(lambda c: c.data == "set_shortener")
     async def set_shortener(callback: types.CallbackQuery, state: FSMContext):
         await state.set_state(BotStates.SET_SHORTENER)
         await callback.message.edit_text(
-            "Send the shortener details in format: <code>shortlink mdisk.link your_api_key</code>"
+            "Send the shortener details in format: <code>shortlink mdisk.link your_api_key</code> 🔗"
         )
+        await callback.answer()
 
     @dp.message(StateFilter(BotStates.SET_SHORTENER))
     async def process_shortener(message: types.Message, state: FSMContext):
@@ -217,12 +233,12 @@ def register_handlers(dp: Dispatcher, db: Database, shortener: Shortener):
             _, shortlink_url, api = message.text.split(" ")
         except ValueError:
             await message.reply(
-                "Invalid format! Use: <code>shortlink mdisk.link your_api_key</code>"
+                "Invalid format! Use: <code>shortlink mdisk.link your_api_key</code> 😕"
             )
             return
         await db.save_shortener(message.from_user.id, shortlink_url, api)
         await message.reply(
-            f"Shortener set!\nWebsite: <code>{shortlink_url}</code>\nAPI: <code>{api}</code>",
+            f"Shortener set! ✅\nWebsite: <code>{shortlink_url}</code>\nAPI: <code>{api}</code>",
             reply_markup=get_main_menu()
         )
         await state.clear()
@@ -230,12 +246,13 @@ def register_handlers(dp: Dispatcher, db: Database, shortener: Shortener):
     @dp.callback_query(lambda c: c.data == "see_shortener")
     async def see_shortener(callback: types.CallbackQuery):
         shortener = await db.get_shortener(callback.from_user.id)
+        new_markup = get_main_menu()
         if shortener:
-            await callback.message.edit_text(
-                f"Current Shortener:\nWebsite: <code>{shortener['url']}</code>\nAPI: <code>{shortener['api']}</code>",
-                reply_markup=get_main_menu()
-            )
+            new_text = f"Current Shortener: 👀\nWebsite: <code>{shortener['url']}</code>\nAPI: <code>{shortener['api']}</code>"
         else:
-            await callback.message.edit_text(
-                "No shortener set!", reply_markup=get_main_menu()
-            )
+            new_text = "No shortener set! 🚫"
+        current_text = getattr(callback.message, 'text', '')
+        current_markup = getattr(callback.message, 'reply_markup', None)
+        if current_text != new_text or current_markup != new_markup:
+            await callback.message.edit_text(new_text, reply_markup=new_markup)
+        await callback.answer()

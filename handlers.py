@@ -383,19 +383,30 @@ def register_handlers(dp: Dispatcher, db: Database, shortener: Shortener, bot: B
             logger.error(f"Error setting shortlink for user {user_id}: {e}")
             await message.reply("Failed to set shortlink. Try again. 😕", reply_markup=await channel_manager.get_main_menu(user_id))
 
-    @dp.message()
-    async def handle_message(message: types.Message):
+    async def is_database_channel(message: types.Message, db: Database):
+        chat_id = message.chat.id
+        user_id = message.from_user.id if message.from_user else None
+        if not user_id:
+            logger.debug(f"No user_id in message from chat {chat_id}, likely anonymous admin")
+            return False
+        database_channels = await db.get_channels(user_id, "database")
+        is_db_channel = chat_id in database_channels
+        logger.debug(f"Chat {chat_id} {'is' if is_db_channel else 'is not'} a database channel for user {user_id}. Database channels: {database_channels}")
+        return is_db_channel
+
+    @dp.message(lambda message: is_database_channel(message, db))
+    async def handle_database_message(message: types.Message):
         user_id = message.from_user.id
         chat_id = message.chat.id
-        logger.info(f"Received message from user {user_id} in chat {chat_id} with content_type: {message.content_type}")
+        logger.info(f"Received message in database channel {chat_id} from user {user_id} with content_type: {message.content_type}")
         try:
             if message.content_type in ["photo", "video", "document"]:
-                logger.info(f"Detected media message from user {user_id} in chat {chat_id}")
+                logger.info(f"Detected media message in database channel {chat_id} from user {user_id}")
                 await media_manager.index_media(bot, user_id, chat_id, message)
             else:
-                logger.debug(f"Ignoring non-media message from user {user_id} in chat {chat_id}")
+                logger.debug(f"Ignoring non-media message in database channel {chat_id} from user {user_id}")
         except Exception as e:
-            logger.error(f"Error handling message from user {user_id} in chat {chat_id}: {e}", exc_info=True)
+            logger.error(f"Error handling database channel message from user {user_id} in chat {chat_id}: {e}", exc_info=True)
             await message.reply("Failed to process message. Try again or contact support. 😕")
 
     @dp.callback_query(lambda c: c.data == "total_files")
@@ -443,6 +454,24 @@ def register_handlers(dp: Dispatcher, db: Database, shortener: Shortener, bot: B
         except Exception as e:
             logger.error(f"Error in /debug_channels for user {user_id}: {e}")
             await message.reply("Failed to fetch channel details. Try again. 😕")
+
+    @dp.message(Command("debug_media"))
+    async def debug_media(message: types.Message):
+        user_id = message.from_user.id
+        logger.info(f"User {user_id} running /debug_media")
+        try:
+            media_files = await db.get_user_media(user_id)
+            response = f"Debug Media for User {user_id}:\n\n"
+            response += f"Total Files: {len(media_files)}\n"
+            for media in media_files[:10]:  # Limit to 10 for brevity
+                response += f"- File: {media['file_name']} (Type: {media['media_type']}, Size: {media['file_size'] / 1024 / 1024:.2f} MB, ID: {media['file_id']})\n"
+            if len(media_files) > 10:
+                response += f"... and {len(media_files) - 10} more files\n"
+            await message.reply(response)
+            logger.info(f"Displayed debug media for user {user_id}: {len(media_files)} files")
+        except Exception as e:
+            logger.error(f"Error in /debug_media for user {user_id}: {e}")
+            await message.reply("Failed to fetch media details. Try again. 😕")
 
     @dp.message(Command("broadcast"))
     async def broadcast_command(message: types.Message, state: FSMContext):

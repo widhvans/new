@@ -16,6 +16,7 @@ class BotStates(StatesGroup):
     SET_SHORTENER = State()
     SET_BACKUP_LINK = State()
     SET_HOW_TO_DOWNLOAD = State()
+    SET_CLONE_TOKEN = State()
 
 class MediaFilter(BaseFilter):
     async def __call__(self, message: types.Message) -> bool:
@@ -25,7 +26,7 @@ def get_main_menu():
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
         [
             InlineKeyboardButton(text="📢 Add Post Channel", callback_data="add_post_channel"),
-            InlineKeyboardButton(text="🗄 Add Database Channel", callback_data="add_database_channel")
+            InlineKeyboardButton(text="🗄️ Add Database Channel", callback_data="add_database_channel")
         ],
         [
             InlineKeyboardButton(text="🔗 Set Shortener", callback_data="set_shortener"),
@@ -38,6 +39,10 @@ def get_main_menu():
         [
             InlineKeyboardButton(text="📊 Total Files", callback_data="total_files"),
             InlineKeyboardButton(text="🔍 Clone Search", callback_data="clone_search")
+        ],
+        [
+            InlineKeyboardButton(text="🤖 Add Clone Bot", callback_data="add_clone"),
+            InlineKeyboardButton(text="📋 My Clones", callback_data="my_clones")
         ]
     ])
     return keyboard
@@ -148,22 +153,26 @@ def register_handlers(dp: Dispatcher, db: Database, shortener: Shortener):
         file_id = None
         file_name = None
         media_type = None
+        file_size = None
         if message.photo:
             file_id = message.photo[-1].file_id
             media_type = "photo"
             file_name = f"photo_{message.message_id}.jpg"
+            file_size = message.photo[-1].file_size or "Unknown"
         elif message.video:
             file_id = message.video.file_id
             media_type = "video"
             file_name = message.video.file_name or f"video_{message.message_id}.mp4"
+            file_size = message.video.file_size or "Unknown"
         elif message.document:
             file_id = message.document.file_id
             media_type = "document"
             file_name = message.document.file_name or f"doc_{message.message_id}"
+            file_size = message.document.file_size or "Unknown"
 
         if file_id:
             raw_link = f"telegram://file/{file_id}"
-            await db.save_media(user_id, media_type, file_id, file_name, raw_link)
+            await db.save_media(user_id, media_type, file_id, file_name, raw_link, file_size)
             await asyncio.sleep(20)
             await post_media(user_id, file_name, raw_link, message.chat.id)
 
@@ -251,6 +260,93 @@ def register_handlers(dp: Dispatcher, db: Database, shortener: Shortener):
             new_text = f"Current Shortener: 👀\nWebsite: <code>{shortener['url']}</code>\nAPI: <code>{shortener['api']}</code>"
         else:
             new_text = "No shortener set! 🚫"
+        current_text = getattr(callback.message, 'text', '')
+        current_markup = getattr(callback.message, 'reply_markup', None)
+        if current_text != new_text or current_markup != new_markup:
+            await callback.message.edit_text(new_text, reply_markup=new_markup)
+        await callback.answer()
+
+    @dp.callback_query(lambda c: c.data == "set_backup_link")
+    async def set_backup_link(callback: types.CallbackQuery, state: FSMContext):
+        await state.set_state(BotStates.SET_BACKUP_LINK)
+        await callback.message.edit_text(
+            "Please send the backup link URL. 🔄"
+        )
+        await callback.answer()
+
+    @dp.message(StateFilter(BotStates.SET_BACKUP_LINK))
+    async def process_backup_link(message: types.Message, state: FSMContext):
+        backup_link = message.text.strip()
+        if not backup_link.startswith("http"):
+            await message.reply("Invalid URL! Please send a valid link starting with http:// or https://. 😕")
+            return
+        await db.save_group_settings(message.from_user.id, "backup_link", backup_link)
+        await message.reply(f"Backup link set! ✅\nLink: <code>{backup_link}</code>", reply_markup=get_main_menu())
+        await state.clear()
+
+    @dp.callback_query(lambda c: c.data == "set_how_to_download")
+    async def set_how_to_download(callback: types.CallbackQuery, state: FSMContext):
+        await state.set_state(BotStates.SET_HOW_TO_DOWNLOAD)
+        await callback.message.edit_text(
+            "Please send the 'How to Download' tutorial URL. 📖"
+        )
+        await callback.answer()
+
+    @dp.message(StateFilter(BotStates.SET_HOW_TO_DOWNLOAD))
+    async def process_how_to_download(message: types.Message, state: FSMContext):
+        how_to_download = message.text.strip()
+        if not how_to_download.startswith("http"):
+            await message.reply("Invalid URL! Please send a valid link starting with http:// or https://. 😕")
+            return
+        await db.save_group_settings(message.from_user.id, "how_to_download", how_to_download)
+        await message.reply(f"How to Download link set! ✅\nLink: <code>{how_to_download}</code>", reply_markup=get_main_menu())
+        await state.clear()
+
+    @dp.callback_query(lambda c: c.data == "add_clone")
+    async def add_clone(callback: types.CallbackQuery, state: FSMContext):
+        user_id = callback.from_user.id
+        existing_clone = await db.get_clone_bot(user_id)
+        if existing_clone:
+            await callback.message.edit_text(
+                "You already have a clone bot! 🤖 Check 'My Clones' to manage it.",
+                reply_markup=get_main_menu()
+            )
+            await callback.answer()
+            return
+        await state.set_state(BotStates.SET_CLONE_TOKEN)
+        await callback.message.edit_text(
+            "Please send the bot token for your clone bot. 🤖\nObtain a token by creating a new bot via @BotFather."
+        )
+        await callback.answer()
+
+    @dp.message(StateFilter(BotStates.SET_CLONE_TOKEN))
+    async def process_clone_token(message: types.Message, state: FSMContext):
+        user_id = message.from_user.id
+        token = message.text.strip()
+        try:
+            # Validate token format (basic check)
+            if not token.count(":") == 1 or len(token) < 35:
+                raise ValueError("Invalid token format")
+            # Save clone bot token
+            await db.save_clone_bot(user_id, token)
+            await message.reply(
+                "Clone bot added successfully! ✅\nStart your clone bot with /start to use it.",
+                reply_markup=get_main_menu()
+            )
+            await state.clear()
+        except Exception as e:
+            await message.reply(f"Failed to add clone bot: {str(e)} 😕\nPlease send a valid token.")
+            logger.error(f"Error adding clone bot for user {user_id}: {e}")
+
+    @dp.callback_query(lambda c: c.data == "my_clones")
+    async def show_my_clones(callback: types.CallbackQuery):
+        user_id = callback.from_user.id
+        clone_bot = await db.get_clone_bot(user_id)
+        new_markup = get_main_menu()
+        if clone_bot:
+            new_text = f"Your Clone Bot: 🤖\nToken: <code>{clone_bot['token']}</code>\nStart it with /start in the bot."
+        else:
+            new_text = "No clone bots created yet! 🚫\nUse 'Add Clone Bot' to create one."
         current_text = getattr(callback.message, 'text', '')
         current_markup = getattr(callback.message, 'reply_markup', None)
         if current_text != new_text or current_markup != new_markup:

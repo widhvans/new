@@ -14,7 +14,7 @@ class Database:
         try:
             self.client = AsyncIOMotorClient(MONGO_URI)
             self.db = self.client[DB_NAME]
-            logger.debug("Successfully connected to MongoDB")
+            logger.info("Successfully connected to MongoDB")
         except Exception as e:
             logger.error(f"Failed to connect to MongoDB: {e}")
             raise
@@ -23,7 +23,7 @@ class Database:
         try:
             if self.client:
                 self.client.close()
-                logger.debug("Successfully disconnected from MongoDB")
+                logger.info("Successfully disconnected from MongoDB")
         except Exception as e:
             logger.error(f"Error disconnecting from MongoDB: {e}")
 
@@ -38,7 +38,8 @@ class Database:
                 "file_size": file_size,
                 "created_at": datetime.now()
             })
-            logger.debug(f"Saved media {file_name} for user {user_id}, ID: {result.inserted_id}")
+            logger.info(f"Saved media {file_name} for user {user_id}, ID: {result.inserted_id}")
+            return result
         except Exception as e:
             logger.error(f"Error saving media for user {user_id}: {e}")
             raise
@@ -46,7 +47,7 @@ class Database:
     async def get_user_media(self, user_id):
         try:
             media = await self.db.media.find({"user_id": user_id}).to_list(None)
-            logger.debug(f"Fetched {len(media)} media files for user {user_id}")
+            logger.info(f"Fetched {len(media)} media files for user {user_id}")
             return media
         except Exception as e:
             logger.error(f"Error fetching media for user {user_id}: {e}")
@@ -59,7 +60,7 @@ class Database:
                 {"$addToSet": {"channel_ids": channel_id}},
                 upsert=True
             )
-            logger.debug(f"Saved channel {channel_id} ({channel_type}) for user {user_id}")
+            logger.info(f"Saved channel {channel_id} ({channel_type}) for user {user_id}")
             return result
         except Exception as e:
             logger.error(f"Error saving channel for user {user_id}: {e}")
@@ -69,7 +70,7 @@ class Database:
         try:
             result = await self.db.channels.find_one({"user_id": user_id, "channel_type": channel_type})
             channels = result.get("channel_ids", []) if result else []
-            logger.debug(f"Fetched {len(channels)} {channel_type} channels for user {user_id}")
+            logger.info(f"Fetched {len(channels)} {channel_type} channels for user {user_id}")
             return channels
         except Exception as e:
             logger.error(f"Error fetching channels for user {user_id}: {e}")
@@ -82,7 +83,7 @@ class Database:
                 {"$set": {"url": shortener_url, "api": shortener_api}},
                 upsert=True
             )
-            logger.debug(f"Saved shortener for chat {chat_id}")
+            logger.info(f"Saved shortener for chat {chat_id}")
             return result
         except Exception as e:
             logger.error(f"Error saving shortener for chat {chat_id}: {e}")
@@ -91,7 +92,7 @@ class Database:
     async def get_shortener(self, chat_id):
         try:
             shortener = await self.db.shorteners.find_one({"chat_id": chat_id})
-            logger.debug(f"Fetched shortener for chat {chat_id}: {bool(shortener)}")
+            logger.info(f"Fetched shortener for chat {chat_id}: {bool(shortener)}")
             return shortener
         except Exception as e:
             logger.error(f"Error fetching shortener for chat {chat_id}: {e}")
@@ -107,7 +108,7 @@ class Database:
                 "backup_link": settings.get("backup_link", ""),
                 "how_to_download": settings.get("how_to_download", "")
             }
-            logger.debug(f"Fetched settings for chat {chat_id}")
+            logger.info(f"Fetched settings for chat {chat_id}")
             return result
         except Exception as e:
             logger.error(f"Error fetching settings for chat {chat_id}: {e}")
@@ -120,7 +121,7 @@ class Database:
                 {"$set": {key: value}},
                 upsert=True
             )
-            logger.debug(f"Saved setting {key} for chat {chat_id}")
+            logger.info(f"Saved setting {key} for chat {chat_id}")
             return result
         except Exception as e:
             logger.error(f"Error saving settings for chat {chat_id}: {e}")
@@ -133,7 +134,7 @@ class Database:
                 {"$set": {"token": token, "created_at": datetime.now()}},
                 upsert=True
             )
-            logger.debug(f"Saved clone bot token for user {user_id}")
+            logger.info(f"Saved clone bot token for user {user_id}")
             return result
         except Exception as e:
             logger.error(f"Error saving clone bot for user {user_id}: {e}")
@@ -142,7 +143,7 @@ class Database:
     async def get_clone_bot(self, user_id):
         try:
             clone_bot = await self.db.clone_bots.find_one({"user_id": user_id})
-            logger.debug(f"Fetched clone bot for user {user_id}: {bool(clone_bot)}")
+            logger.info(f"Fetched clone bot for user {user_id}: {bool(clone_bot)}")
             return clone_bot
         except Exception as e:
             logger.error(f"Error fetching clone bot for user {user_id}: {e}")

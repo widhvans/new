@@ -3,7 +3,7 @@ import logging
 from pyrogram import Client, filters, enums
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from pyrogram.errors import PeerIdInvalid, ChatAdminRequired, MessageNotModified
-from config import API_ID, API_HASH, BOT_TOKEN, BOT_USERNAME, SHORTLINK_URL, SHORTLINK_API
+from config import API_ID, API_HASH, BOT_TOKEN, BOT_USERNAME, ADMIN_IDS
 from database import users_collection, settings_collection, media_collection
 from user import save_user
 
@@ -85,8 +85,8 @@ async def start_command(client, message):
         await save_user_settings(user_id, "input_state", None)
         welcome_msg = (
             f"Welcome to {BOT_USERNAME}! 🎉\n"
-            "Store media, auto-post, search clones, and more!\n"
-            "Let's get started."
+            "I'm your personal storage bot! I can save your media files, shorten links, auto-post to channels, and more.\n"
+            "Let's get started with some cool features!"
         )
         buttons = [
             [InlineKeyboardButton("Let's Begin", callback_data="main_menu")]
@@ -320,7 +320,13 @@ async def handle_forwarded_message(client, message):
             if channel_id not in channels:
                 channels.append(channel_id)
                 await save_user_settings(user_id, channel_type, channels)
-                await message.reply(f"{channel_type.replace('_', ' ').title()} connected!")
+                await message.reply(
+                    f"{channel_type.replace('_', ' ').title()} connected!",
+                    reply_markup=InlineKeyboardMarkup([
+                        [InlineKeyboardButton(f"Add More {channel_type.replace('_', ' ').title()}", callback_data=f"add_{channel_type}")],
+                        [InlineKeyboardButton("Go Back", callback_data="main_menu")]
+                    ])
+                )
                 logger.info(f"Channel {channel_id} added to {channel_type} for user {user_id}")
             else:
                 await message.reply("Channel already connected!")
@@ -383,7 +389,7 @@ async def handle_input(client, message):
 
         elif input_state == "clone_search":
             query = input_text.lower()
-            files = await media_collection.find({"user_id": user_id, "file_name": {"$regex": query, "$options": "i"}}).to_list(10)
+            files = await media_collection.find({"file_name": {"$regex": query, "$options": "i"}}).to_list(10)
             buttons = []
             for file in files:
                 buttons.append([InlineKeyboardButton(
@@ -412,6 +418,47 @@ async def handle_input(client, message):
         await message.reply("An error occurred! Please try again.")
         buttons = [[InlineKeyboardButton("Go Back", callback_data="main_menu")]]
         await message.reply("What next?", reply_markup=InlineKeyboardMarkup(buttons))
+
+@app.on_message(filters.command("broadcast") & filters.user(ADMIN_IDS))
+async def broadcast(client, message):
+    logger.info(f"Broadcast command received from admin {message.from_user.id}")
+    try:
+        target = message.text.split(" ", 1)[1] if len(message.text.split()) > 1 else "all"
+        users = []
+        if target in ["users", "all"]:
+            async for user in users_collection.find():
+                users.append(user["user_id"])
+        if target in ["db_owners", "all"]:
+            async for setting in settings_collection.find({"db_channels": {"$exists": True}}):
+                users.append(setting["user_id"])
+        users = list(set(users))
+        msg = await message.reply("Enter the broadcast message:")
+        broadcast_msg = (await client.wait_for_message(msg.chat.id, msg.id + 1)).text
+        sent = 0
+        for user_id in users:
+            try:
+                await client.send_message(user_id, broadcast_msg)
+                sent += 1
+                await asyncio.sleep(1)
+            except Exception as e:
+                logger.error(f"Failed to send broadcast to {user_id}: {e}")
+        await msg.reply(f"Broadcast sent to {sent}/{len(users)} users.")
+        logger.info(f"Broadcast completed by admin {message.from_user.id}: {sent}/{len(users)} users")
+    except Exception as e:
+        logger.error(f"Error in broadcast for admin {message.from_user.id}: {e}")
+        await message.reply("Error occurred. Try again.")
+
+@app.on_message(filters.command("stats") & filters.user(ADMIN_IDS))
+async def stats(client, message):
+    logger.info(f"Stats command received from admin {message.from_user.id}")
+    try:
+        total_users = await users_collection.count_documents({})
+        db_owners = await settings_collection.count_documents({"db_channels": {"$exists": True}})
+        await message.reply(f"Total Users: {total_users}\nDatabase Owners: {db_owners}")
+        logger.info(f"Stats sent to admin {message.from_user.id}")
+    except Exception as e:
+        logger.error(f"Error in stats for admin {message.from_user.id}: {e}")
+        await message.reply("Error occurred. Try again.")
 
 if __name__ == "__main__":
     logger.info("Starting bot...")

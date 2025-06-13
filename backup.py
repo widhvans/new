@@ -6,24 +6,40 @@ from bot import app, logger
 @app.on_callback_query(filters.regex("set_backup_link"))
 async def set_backup_link(client, callback):
     user_id = callback.from_user.id
-    await callback.message.edit(
-        "Send the backup link URL.",
-        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Go Back", callback_data="main_menu")]])
-    )
-    app.add_handler(
-        filters.text & filters.user(user_id) & filters.private,
-        lambda c, m: handle_backup_link(c, m, user_id)
-    )
-
-async def handle_backup_link(client, message, user_id):
-    backup_link = message.text.strip()
+    logger.info(f"Set backup link initiated by user {user_id}")
     try:
-        await save_user_settings(user_id, "backup_link", backup_link)
-        await message.reply("Backup link set successfully!")
+        await callback.message.edit(
+            "Send the backup link URL.",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Go Back", callback_data="main_menu")]])
+        )
+        await save_user_settings(user_id, "input_state", "set_backup_link")
+        logger.info(f"Waiting for backup link from user {user_id}")
     except Exception as e:
-        logger.error(f"Error setting backup link: {e}")
+        logger.error(f"Error in set_backup_link: {e}")
+        await callback.message.edit("Error occurred. Try again.")
+
+@app.on_message(filters.text & filters.private)
+async def handle_backup_link(client, message):
+    user_id = message.from_user.id
+    logger.info(f"Received backup link input from user {user_id}: {message.text}")
+    try:
+        settings = await get_user_settings(user_id)
+        if settings.get("input_state") != "set_backup_link":
+            logger.info(f"No backup link input expected for user {user_id}")
+            return
+        backup_link = message.text.strip()
+        await save_user_settings(user_id, "backup_link", backup_link)
+        await save_user_settings(user_id, "input_state", None)
+        await message.reply("Backup link set successfully!")
+        logger.info(f"Backup link set for user {user_id}: {backup_link}")
+        await message.reply(
+            "What next?",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Go Back", callback_data="main_menu")]])
+        )
+    except Exception as e:
+        logger.error(f"Error handling backup link for user {user_id}: {e}")
         await message.reply("Invalid link!")
-    await message.reply(
-        "What next?",
-        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Go Back", callback_data="main_menu")]])
-    )
+        await message.reply(
+            "What next?",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Go Back", callback_data="main_menu")]])
+        )

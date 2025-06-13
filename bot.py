@@ -4,7 +4,7 @@ from pyrogram import Client, filters, enums
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from pyrogram.errors import PeerIdInvalid, ChatAdminRequired, MessageNotModified
 from config import API_ID, API_HASH, BOT_TOKEN, BOT_USERNAME, SHORTLINK_URL, SHORTLINK_API
-from database import users_collection, settings_collection
+from database import users_collection, settings_collection, media_collection
 from user import save_user
 
 # Configure logging
@@ -383,9 +383,9 @@ async def handle_input(client, message):
 
         elif input_state == "clone_search":
             query = input_text.lower()
-            files = media_collection.find({"file_name": {"$regex": query, "$options": "i"}}).limit(10)
+            files = await media_collection.find({"user_id": user_id, "file_name": {"$regex": query, "$options": "i"}}).to_list(10)
             buttons = []
-            async for file in files:
+            for file in files:
                 buttons.append([InlineKeyboardButton(
                     f"{file['file_name']} ({file.get('file_size', 0) / 1024 / 1024:.2f} MB)",
                     callback_data=f"clone_file_{file['file_id']}_{file['user_id']}"

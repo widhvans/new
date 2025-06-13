@@ -24,27 +24,30 @@ def check_single_instance():
 async def start_bot(token: str, db: Database):
     try:
         bot = Bot(token=token)
+        bot_info = await bot.get_me()
+        logger.info(f"Starting bot with username @{bot_info.username}")
         storage = MemoryStorage()
         dp = Dispatcher(storage=storage)
-        shortener = Shortener()
+        shortener = Shortener(db)
         register_handlers(dp, db, shortener, bot)
         await bot.delete_webhook(drop_pending_updates=True)
         await dp.start_polling(bot, allowed_updates=["message", "callback_query"])
-        logger.info(f"Bot started with token ending in {token[-4:]}")
+        logger.info(f"Bot @{bot_info.username} started successfully")
     except Exception as e:
         logger.error(f"Failed to start bot with token ending in {token[-4:]}: {e}")
 
 async def main():
     check_single_instance()
     logger.info("Starting main bot...")
-    db = Database()  # Initialize single Database instance
-    await start_bot(BOT_TOKEN, db)
+    db = Database()
+    # Start main bot
+    main_task = start_bot(BOT_TOKEN, db)
     # Start clone bots
     clone_bots = await db.get_all_clone_bots()
-    tasks = [start_bot(clone['token'], db) for clone in clone_bots]
-    if tasks:
-        logger.info(f"Starting {len(tasks)} clone bots...")
-        await asyncio.gather(*tasks)
+    logger.info(f"Found {len(clone_bots)} clone bots to start")
+    clone_tasks = [start_bot(clone['token'], db) for clone in clone_bots]
+    tasks = [main_task] + clone_tasks
+    await asyncio.gather(*tasks, return_exceptions=True)
 
 if __name__ == "__main__":
     try:

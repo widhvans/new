@@ -6,3 +6,4 @@ DB_NAME = "telegram_bot"
 SHORTLINK_URL = "earn4link.in"
 SHORTLINK_API = "987ef01cfd538490d733c3341926742e779421e2"
 ENABLE_SHORTLINK = True
+BOT_USERNAME = "@Complete_jwshw_bot"

@@ -618,12 +618,12 @@ def register_handlers(dp: Dispatcher, db: Database, shortener: Shortener, bot: B
         user_id = callback.from_user.id
         logger.info(f"User {user_id} viewing shortener")
         try:
-            shortener = await db_instance.get_shortener(user_id)
+            shortener_settings = await db_instance.get_shortener(user_id)
             new_markup = await get_main_menu(user_id)
-            if shortener:
+            if shortener_settings:
                 test_link = await test_shortener(db_instance, shortener, user_id)
                 test_status = f"Test Link: <code>{test_link}</code>\n" if test_link else "Test Link: Failed to generate, check API settings.\n"
-                new_text = f"Current Shortener: 👀\nWebsite: <code>{shortener['url']}</code>\nAPI: <code>{shortener['api']}</code>\n{test_status}"
+                new_text = f"Current Shortener: 👀\nWebsite: <code>{shortener_settings['url']}</code>\nAPI: <code>{shortener_settings['api']}</code>\n{test_status}"
             else:
                 new_text = "No shortener set! 🚫"
             current_text = getattr(callback.message, 'text', '')
@@ -805,9 +805,21 @@ def register_handlers(dp: Dispatcher, db: Database, shortener: Shortener, bot: B
         logger.info(f"User {user_id} viewing clone bots")
         try:
             clone_bot = await db_instance.get_clone_bot(user_id)
-            new_markup = await get_main_menu(user_id)
+            new_markup = InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="⬅️ Back", callback_data="main_menu")]
+            ])
             if clone_bot:
-                new_text = f"Your Clone Bot: 🤖\nUsername: <code>{clone_bot['username']}</code>\nStart it with /start."
+                username = clone_bot.get('username', 'Unknown')
+                if username == 'Unknown' and 'token' in clone_bot:
+                    try:
+                        test_bot = Bot(token=clone_bot['token'])
+                        bot_info = await test_bot.get_me()
+                        username = f"@{bot_info.username}" if bot_info.username else "Unknown"
+                        await db_instance.save_clone_bot(user_id, clone_bot['token'], username)
+                    except Exception as e:
+                        logger.warning(f"Failed to fetch username for clone bot of user {user_id}: {e}")
+                new_text = f"Your Clone Bot: 🤖\nUsername: <code>{username}</code>\nStart it with /start."
+                new_markup.inline_keyboard.insert(0, [InlineKeyboardButton(text="🗑️ Delete Clone Bot", callback_data="delete_clone")])
             else:
                 new_text = "No clone bots created yet! 🚫\nUse 'Add Clone Bot' to create one."
             current_text = getattr(callback.message, 'text', '')
@@ -818,6 +830,26 @@ def register_handlers(dp: Dispatcher, db: Database, shortener: Shortener, bot: B
         except Exception as e:
             logger.error(f"Error showing clone bots for user {user_id}: {e}")
             await callback.message.reply("Failed to fetch clone bots. Try again. 😕", reply_markup=await get_main_menu(user_id))
+
+    @dp.callback_query(lambda c: c.data == "delete_clone")
+    async def delete_clone(callback: types.CallbackQuery):
+        user_id = callback.from_user.id
+        logger.info(f"User {user_id} deleting clone bot")
+        try:
+            clone_bot = await db_instance.get_clone_bot(user_id)
+            if not clone_bot:
+                await callback.message.edit_text("No clone bot found! 🚫", reply_markup=await get_main_menu(user_id))
+                logger.warning(f"No clone bot found for user {user_id}")
+                await callback.answer()
+                return
+            username = clone_bot.get('username', 'Unknown')
+            await db_instance.delete_clone_bot(user_id)
+            await callback.message.edit_text(f"Clone bot {username} deleted successfully! ✅", reply_markup=await get_main_menu(user_id))
+            logger.info(f"Deleted clone bot {username} for user {user_id}")
+            await callback.answer()
+        except Exception as e:
+            logger.error(f"Error deleting clone bot for user {user_id}: {e}")
+            await callback.message.reply("Failed to delete clone bot. Try again. 😕", reply_markup=await get_main_menu(user_id))
 
     @dp.callback_query(lambda c: c.data == "clone_search")
     async def clone_search(callback: types.CallbackQuery):

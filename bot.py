@@ -35,7 +35,7 @@ async def start_bot(token: str, db: Database, is_clone: bool = False):
         else:
             register_handlers(dp, db, shortener, bot)
         await bot.delete_webhook(drop_pending_updates=True)
-        allowed_updates = ["message", "callback_query", "channel_post"]
+        allowed_updates = ["message", "callback_query", "channel_post", "edited_channel_post"]
         for attempt in range(3):
             try:
                 await dp.start_polling(bot, allowed_updates=allowed_updates, handle_as_tasks=True)

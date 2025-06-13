@@ -41,23 +41,6 @@ async def validate_channel(client, channel_id, user_id, require_admin=True):
     logger.info(f"Validating channel {channel_id} for user {user_id}")
     for attempt in range(3):  # Retry 3 times
         try:
-            # Attempt to send a test message first to force API sync
-            try:
-                await client.send_message(channel_id, f"Test message from {BOT_USERNAME} to sync interaction.")
-                logger.info(f"Test message sent to channel {channel_id} on attempt {attempt + 1}")
-            except ChatAdminRequired:
-                if require_admin:
-                    logger.warning(f"Bot lacks permission to send message in channel {channel_id}")
-                    return False, "Bot needs admin permissions to send messages."
-            except PeerIdInvalid:
-                logger.warning(f"PEER_ID_INVALID when sending test message on attempt {attempt + 1}")
-                if attempt < 2:
-                    await asyncio.sleep(3)  # Wait before retry
-                    continue
-                return False, "Invalid channel ID or bot hasn't interacted with this channel."
-            except Exception as e:
-                logger.error(f"Error sending test message to channel {channel_id}: {e}")
-
             # Fetch chat to verify access
             chat = await client.get_chat(channel_id)
             logger.info(f"Chat fetched: {chat.title} ({chat.id})")
@@ -75,13 +58,23 @@ async def validate_channel(client, channel_id, user_id, require_admin=True):
                 if not any(admin.user.id == bot_id for admin in admins):
                     logger.warning(f"Bot not admin in channel {channel_id}")
                     return False, "Bot is not an admin in this channel."
+            # Send a test message to force API sync
+            try:
+                await client.send_message(channel_id, f"Test message from {BOT_USERNAME} to sync interaction.")
+                logger.info(f"Test message sent to channel {channel_id} on attempt {attempt + 1}")
+            except ChatAdminRequired:
+                if require_admin:
+                    logger.warning(f"Bot lacks permission to send message in channel {channel_id}")
+                    return False, "Bot needs admin permissions to send messages."
+            except Exception as e:
+                logger.error(f"Error sending test message to channel {channel_id}: {e}")
             return True, ""
         except PeerIdInvalid:
             logger.error(f"PEER_ID_INVALID for channel {channel_id} on attempt {attempt + 1}")
             if attempt < 2:
                 await asyncio.sleep(3)  # Wait before retry
                 continue
-            return False, "Invalid channel ID or bot hasn't interacted with this channel."
+            return False, "Invalid channel or bot hasn't interacted with this channel."
         except Exception as e:
             logger.error(f"Error validating channel {channel_id} on attempt {attempt + 1}: {e}")
             return False, str(e)
@@ -128,10 +121,12 @@ async def handle_callback(client, callback):
                 [InlineKeyboardButton("Toggle Poster", callback_data="toggle_poster")],
                 [InlineKeyboardButton("Set How to Download", callback_data="set_howto")]
             ]
-            await callback.message.edit(
-                "Choose an option:",
-                reply_markup=InlineKeyboardMarkup(buttons)
-            )
+            new_text = "Choose an option:"
+            if callback.message.text != new_text:
+                await callback.message.edit(
+                    new_text,
+                    reply_markup=InlineKeyboardMarkup(buttons)
+                )
             await callback.answer()
             logger.info(f"Main menu displayed for user {user_id}")
 
@@ -139,43 +134,47 @@ async def handle_callback(client, callback):
             settings = await get_user_settings(user_id)
             post_channels = settings.get("post_channels", [])
             if len(post_channels) >= 5:
-                await callback.message.edit("Max 5 post channels allowed!")
+                new_text = "Max 5 post channels allowed!"
+                if callback.message.text != new_text:
+                    await callback.message.edit(new_text)
                 await callback.answer("Limit reached!")
                 logger.warning(f"User {user_id} attempted to add more than 5 post channels")
                 return
             new_text = (
                 f"1. Add {BOT_USERNAME} to the post channel and make it an admin.\n"
-                f"2. Send the channel ID (e.g., -100123456789)."
+                f"2. Forward any message from the channel to me."
             )
-            if callback.message.text != new_text:  # Prevent MESSAGE_NOT_MODIFIED
+            if callback.message.text != new_text:
                 await callback.message.edit(
                     new_text,
                     reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Go Back", callback_data="main_menu")]])
                 )
-            await save_user_settings(user_id, "input_state", "add_post_channel")
-            await callback.answer("Send the channel ID.")
-            logger.info(f"Waiting for post channel ID from user {user_id}")
+            await save_user_settings(user_id, "input_state", "add_post_channel_forward")
+            await callback.answer("Please forward a message.")
+            logger.info(f"Waiting for forwarded post channel message from user {user_id}")
 
         elif data == "add_db_channel":
             settings = await get_user_settings(user_id)
             db_channels = settings.get("db_channels", [])
             if len(db_channels) >= 5:
-                await callback.message.edit("Max 5 database channels allowed!")
+                new_text = "Max 5 database channels allowed!"
+                if callback.message.text != new_text:
+                    await callback.message.edit(new_text)
                 await callback.answer("Limit reached!")
                 logger.warning(f"User {user_id} attempted to add more than 5 db channels")
                 return
             new_text = (
                 f"1. Add {BOT_USERNAME} to the database channel and make it an admin.\n"
-                f"2. Send the channel ID (e.g., -100123456789)."
+                f"2. Forward any message from the channel to me."
             )
-            if callback.message.text != new_text:  # Prevent MESSAGE_NOT_MODIFIED
+            if callback.message.text != new_text:
                 await callback.message.edit(
                     new_text,
                     reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Go Back", callback_data="main_menu")]])
                 )
-            await save_user_settings(user_id, "input_state", "add_db_channel")
-            await callback.answer("Send the channel ID.")
-            logger.info(f"Waiting for database channel ID from user {user_id}")
+            await save_user_settings(user_id, "input_state", "add_db_channel_forward")
+            await callback.answer("Please forward a message.")
+            logger.info(f"Waiting for forwarded database channel message from user {user_id}")
 
         elif data == "set_shortener":
             new_text = "Send shortener URL and API (e.g., earn4link.in your_api_key)"
@@ -215,16 +214,16 @@ async def handle_callback(client, callback):
         elif data == "set_fsub":
             new_text = (
                 f"1. Add {BOT_USERNAME} to the forced subscription channel.\n"
-                f"2. Send the channel ID (e.g., -100123456789)."
+                f"2. Forward any message from the channel to me."
             )
             if callback.message.text != new_text:
                 await callback.message.edit(
                     new_text,
                     reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Go Back", callback_data="main_menu")]])
                 )
-            await save_user_settings(user_id, "input_state", "set_fsub")
-            await callback.answer("Send the channel ID.")
-            logger.info(f"Waiting for fsub channel ID from user {user_id}")
+            await save_user_settings(user_id, "input_state", "set_fsub_forward")
+            await callback.answer("Please forward a message.")
+            logger.info(f"Waiting for forwarded fsub channel message from user {user_id}")
 
         elif data == "total_files":
             count = await media_collection.count_documents({"user_id": user_id})
@@ -276,10 +275,12 @@ async def handle_callback(client, callback):
             logger.warning(f"Unhandled callback data: {data}")
             await callback.answer("Action not recognized!")
             buttons = [[InlineKeyboardButton("Go Back", callback_data="main_menu")]]
-            await callback.message.edit(
-                "Action not recognized. Please try again:",
-                reply_markup=InlineKeyboardMarkup(buttons)
-            )
+            new_text = "Action not recognized. Please try again:"
+            if callback.message.text != new_text:
+                await callback.message.edit(
+                    new_text,
+                    reply_markup=InlineKeyboardMarkup(buttons)
+                )
 
     except MessageNotModified:
         logger.warning(f"MESSAGE_NOT_MODIFIED for user {user_id}, ignoring")
@@ -289,33 +290,33 @@ async def handle_callback(client, callback):
         await callback.message.edit("Error occurred. Try again.")
         await callback.answer("Error occurred!")
 
-@app.on_message(filters.text & filters.private)
-async def handle_input(client, message):
+@app.on_message(filters.forwarded & filters.private)
+async def handle_forwarded_message(client, message):
     user_id = message.from_user.id
-    logger.info(f"Received input from user {user_id}: {message.text}")
+    logger.info(f"Received forwarded message from user {user_id}")
     try:
         settings = await get_user_settings(user_id)
         input_state = settings.get("input_state")
-        if input_state not in [
-            "add_post_channel", "add_db_channel", "set_shortener",
-            "set_backup_link", "set_fsub", "clone_search", "set_howto"
-        ]:
-            logger.info(f"No input expected for user {user_id}")
+        if input_state not in ["add_post_channel_forward", "add_db_channel_forward", "set_fsub_forward"]:
+            logger.info(f"No forwarded message expected for user {user_id}")
             await message.reply("Please select an action from the menu.")
             return
 
-        input_text = message.text.strip()
+        if not message.forward_from_chat or message.forward_from_chat.type != enums.ChatType.CHANNEL:
+            await message.reply("Please forward a message from a channel!")
+            logger.warning(f"Invalid forwarded message from user {user_id}: not from a channel")
+            return
 
-        if input_state in ["add_post_channel", "add_db_channel"]:
-            channel_type = "post_channels" if input_state == "add_post_channel" else "db_channels"
-            channel_id = input_text
-            logger.info(f"Processing channel ID {channel_id} for {channel_type} by user {user_id}")
+        channel_id = str(message.forward_from_chat.id)
+        logger.info(f"Processing forwarded channel ID {channel_id} for user {user_id}")
+
+        if input_state in ["add_post_channel_forward", "add_db_channel_forward"]:
+            channel_type = "post_channels" if input_state == "add_post_channel_forward" else "db_channels"
             is_valid, error_msg = await validate_channel(client, channel_id, user_id)
             if not is_valid:
                 await message.reply(
                     f"Error: {error_msg}\n"
-                    f"Please ensure {BOT_USERNAME} is added to the channel and made an admin.\n"
-                    f"Send a message in the channel (e.g., 'Hello') and verify the channel ID (e.g., -100123456789)."
+                    f"Please ensure {BOT_USERNAME} is added to the channel and made an admin."
                 )
                 logger.error(f"Channel validation failed for {channel_id}: {error_msg}")
                 return
@@ -329,7 +330,44 @@ async def handle_input(client, message):
                 await message.reply("Channel already connected!")
                 logger.info(f"Channel {channel_id} already connected for user {user_id}")
 
-        elif input_state == "set_shortener":
+        elif input_state == "set_fsub_forward":
+            is_valid, error_msg = await validate_channel(client, channel_id, user_id, require_admin=False)
+            if not is_valid:
+                await message.reply(
+                    f"Error: {error_msg}\n"
+                    f"Please ensure {BOT_USERNAME} is added to the channel."
+                )
+                logger.error(f"Fsub channel validation failed for {channel_id}: {error_msg}")
+                return
+            await save_user_settings(user_id, "fsub_channel", channel_id)
+            await message.reply("Forced subscription channel set!")
+            logger.info(f"Fsub set to {channel_id} for user {user_id}")
+
+        await save_user_settings(user_id, "input_state", None)
+        buttons = [[InlineKeyboardButton("Go Back", callback_data="main_menu")]]
+        await message.reply("What next?", reply_markup=InlineKeyboardMarkup(buttons))
+
+    except Exception as e:
+        logger.error(f"Error handling forwarded message for user {user_id}: {e}")
+        await message.reply("Error processing forwarded message! Please try again.")
+        buttons = [[InlineKeyboardButton("Go Back", callback_data="main_menu")]]
+        await message.reply("What next?", reply_markup=InlineKeyboardMarkup(buttons))
+
+@app.on_message(filters.text & filters.private)
+async def handle_input(client, message):
+    user_id = message.from_user.id
+    logger.info(f"Received input from user {user_id}: {message.text}")
+    try:
+        settings = await get_user_settings(user_id)
+        input_state = settings.get("input_state")
+        if input_state not in ["set_shortener", "set_backup_link", "clone_search", "set_howto"]:
+            logger.info(f"No input expected for user {user_id}")
+            await message.reply("Please select an action from the menu or forward a channel message.")
+            return
+
+        input_text = message.text.strip()
+
+        if input_state == "set_shortener":
             try:
                 url, api = input_text.split()
                 await save_user_settings(user_id, "shortlink", url)
@@ -346,22 +384,6 @@ async def handle_input(client, message):
             await save_user_settings(user_id, "backup_link", backup_link)
             await message.reply("Backup link set successfully!")
             logger.info(f"Backup link set for user {user_id}: {backup_link}")
-
-        elif input_state == "set_fsub":
-            channel_id = input_text
-            logger.info(f"Processing fsub channel ID {channel_id} by user {user_id}")
-            is_valid, error_msg = await validate_channel(client, channel_id, user_id, require_admin=False)
-            if not is_valid:
-                await message.reply(
-                    f"Error: {error_msg}\n"
-                    f"Please ensure {BOT_USERNAME} is added to the channel.\n"
-                    f"Send a message in the channel (e.g., 'Hello') and verify the channel ID (e.g., -100123456789)."
-                )
-                logger.error(f"Fsub channel validation failed for {channel_id}: {error_msg}")
-                return
-            await save_user_settings(user_id, "fsub_channel", channel_id)
-            await message.reply("Forced subscription channel set!")
-            logger.info(f"Fsub set to {channel_id} for user {user_id}")
 
         elif input_state == "clone_search":
             query = input_text.lower()

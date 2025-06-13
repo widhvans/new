@@ -29,16 +29,17 @@ class Database:
 
     async def save_media(self, user_id, media_type, file_id, file_name, raw_link, file_size=None):
         try:
-            result = await self.db.media.insert_one({
+            document = {
                 "user_id": user_id,
                 "media_type": media_type,
                 "file_id": file_id,
                 "file_name": file_name,
                 "raw_link": raw_link,
-                "file_size": file_size,
+                "file_size": str(file_size) if file_size else "Unknown",
                 "created_at": datetime.now()
-            })
-            logger.info(f"Saved media {file_name} for user {user_id}, ID: {result.inserted_id}")
+            }
+            result = await self.db.media.insert_one(document)
+            logger.info(f"Saved media {file_name} (type: {media_type}) for user {user_id}, ID: {result.inserted_id}")
             return result
         except Exception as e:
             logger.error(f"Error saving media for user {user_id}: {e}")

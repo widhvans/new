@@ -1,8 +1,8 @@
 from aiogram import Dispatcher, types, Bot
-from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, ChatMemberUpdated
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
-from aiogram.filters import Command, StateFilter, BaseFilter
+from aiogram.filters import Command, StateFilter, BaseFilter, ChatMemberUpdatedFilter
 import asyncio
 import logging
 from database import Database
@@ -22,6 +22,12 @@ class BotStates(StatesGroup):
 class MediaFilter(BaseFilter):
     async def __call__(self, message: types.Message) -> bool:
         return message.content_type in [types.ContentType.PHOTO, types.ContentType.VIDEO, types.ContentType.DOCUMENT]
+
+class BotAdminFilter(ChatMemberUpdatedFilter):
+    async def __call__(self, update: ChatMemberUpdated, bot: Bot) -> bool:
+        if update.new_chat_member.user.id != bot.id:
+            return False
+        return update.new_chat_member.status in ["administrator", "creator"]
 
 def get_main_menu():
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
@@ -96,25 +102,49 @@ async def connect_channel(bot: Bot, user_id: int, channel_id: int, channel_type:
         await state.clear()
         return False
 
+async def preload_chats(bot: Bot):
+    logger.info("Preloading channels from database...")
+    channels = await db_instance.get_all_channels()
+    bot_user = await bot.get_me()
+    for channel in channels:
+        user_id = channel["user_id"]
+        for channel_type in ["post", "database"]:
+            channel_ids = channel.get(f"{channel_type}_channel_ids", [])
+            for channel_id in channel_ids:
+                retries = 3
+                for attempt in range(retries):
+                    try:
+                        await bot.get_chat(channel_id)
+                        chat_member = await bot.get_chat_member(channel_id, bot_user.id)
+                        if chat_member.status not in ["administrator", "creator"]:
+                            logger.warning(f"Bot is not admin in channel {channel_id}, removing from {channel_type} channels")
+                            await db_instance.db.channels.update_one(
+                                {"user_id": user_id},
+                                {"$pull": {f"{channel_type}_channel_ids": channel_id}}
+                            )
+                            await bot.send_message(user_id, f"Bot is no longer admin in channel {channel_id}. Removed from {channel_type} channels. 🚫")
+                            break
+                        logger.info(f"Verified bot is admin in channel {channel_id} for {channel_type}")
+                        break
+                    except Exception as e:
+                        logger.warning(f"Attempt {attempt + 1}/{retries}: Cannot verify channel {channel_id}: {e}")
+                        if attempt == retries - 1:
+                            logger.error(f"Failed to verify channel {channel_id} after {retries} attempts, keeping in database")
+    logger.info("Channel preloading completed")
+
 def register_handlers(dp: Dispatcher, db: Database, shortener: Shortener, bot: Bot):
     global db_instance
     db_instance = db
     ADMINS = [123456789]  # Replace with actual admin IDs
 
-    @dp.my_chat_member()
-    async def on_my_chat_member(update: types.ChatMemberUpdated, state: FSMContext):
+    @dp.chat_member(BotAdminFilter())
+    async def on_bot_added(update: ChatMemberUpdated, state: FSMContext, bot: Bot):
         channel_id = update.chat.id
         user_id = update.from_user.id
-        logger.info(f"Detected bot added to channel {channel_id} by user {user_id}")
+        logger.info(f"Bot added/promoted to admin in channel {channel_id} by user {user_id}")
         try:
-            if update.chat.type not in ["channel", "private", "supergroup"]:
+            if update.chat.type not in ["channel", "supergroup"]:
                 logger.info(f"Ignoring non-channel update in chat {channel_id}")
-                return
-            if update.new_chat_member.user.id != bot.id:
-                logger.info(f"Ignoring non-bot update in channel {channel_id}")
-                return
-            if update.new_chat_member.status not in ["administrator", "creator"]:
-                logger.info(f"Bot not admin in channel {channel_id}, skipping")
                 return
             user_state = await state.get_state()
             channel_type = None
@@ -128,7 +158,7 @@ def register_handlers(dp: Dispatcher, db: Database, shortener: Shortener, bot: B
             if await check_admin_status(bot, channel_id, bot.id):
                 await connect_channel(bot, user_id, channel_id, channel_type, state)
         except Exception as e:
-            logger.error(f"Error handling my_chat_member update in channel {channel_id}: {e}")
+            logger.error(f"Error handling bot addition in channel {channel_id}: {e}")
 
     @dp.message(Command("start"))
     async def start_command(message: types.Message, state: FSMContext):
@@ -147,6 +177,7 @@ def register_handlers(dp: Dispatcher, db: Database, shortener: Shortener, bot: B
         try:
             await message.reply(welcome_msg, reply_markup=keyboard)
             logger.info(f"Sent start message to user {user_id}")
+            await preload_chats(bot)
         except Exception as e:
             logger.error(f"Failed to send start message to user {user_id}: {e}")
 
@@ -291,8 +322,8 @@ def register_handlers(dp: Dispatcher, db: Database, shortener: Shortener, bot: B
                 await callback.answer()
                 return
             await db_instance.db.channels.update_one(
-                {"user_id": user_id, "channel_type": "post"},
-                {"$pull": {"channel_ids": channel_id}}
+                {"user_id": user_id},
+                {"$pull": {"post_channel_ids": channel_id}}
             )
             channel = await bot.get_chat(channel_id)
             channel_name = channel.title or "Unnamed Channel"
@@ -316,8 +347,8 @@ def register_handlers(dp: Dispatcher, db: Database, shortener: Shortener, bot: B
                 await callback.answer()
                 return
             await db_instance.db.channels.update_one(
-                {"user_id": user_id, "channel_type": "database"},
-                {"$pull": {"channel_ids": channel_id}}
+                {"user_id": user_id},
+                {"$pull": {"database_channel_ids": channel_id}}
             )
             channel = await bot.get_chat(channel_id)
             channel_name = channel.title or "Unnamed Channel"
@@ -335,7 +366,6 @@ def register_handlers(dp: Dispatcher, db: Database, shortener: Shortener, bot: B
         grp_id = user_id if chat_type == "private" else message.chat.id
         title = "PM" if chat_type == "private" else message.chat.title
         logger.info(f"User {user_id} setting shortlink for chat {grp_id}")
-
         try:
             if chat_type != "private":
                 member = await message.bot.get_chat_member(grp_id, user_id)
@@ -343,7 +373,6 @@ def register_handlers(dp: Dispatcher, db: Database, shortener: Shortener, bot: B
                     await message.reply("<b>You don't have access to this command! 🚫</b>")
                     logger.warning(f"User {user_id} lacks permission for /shortlink in chat {grp_id}")
                     return
-
             _, shortlink_url, api = message.text.split(" ")
             reply = await message.reply("<b>Please wait... ⏳</b>")
             await db_instance.save_shortener(user_id, shortlink_url, api)
@@ -365,7 +394,6 @@ def register_handlers(dp: Dispatcher, db: Database, shortener: Shortener, bot: B
         user_id = message.from_user.id
         chat_id = message.chat.id
         logger.info(f"User {user_id} sent media in chat {chat_id}")
-
         try:
             database_channels = await db_instance.get_channels(user_id, "database")
             logger.info(f"Fetched {len(database_channels)} database channels for user {user_id}")
@@ -376,12 +404,10 @@ def register_handlers(dp: Dispatcher, db: Database, shortener: Shortener, bot: B
             if chat_id not in database_channels:
                 logger.info(f"Chat {chat_id} is not a database channel for user {user_id}")
                 return
-
             if not await check_admin_status(message.bot, chat_id, message.bot.id):
                 logger.warning(f"Bot not admin in database channel {chat_id} for user {user_id}")
                 await message.reply("I’m not an admin in this database channel. Make me an admin. 🚫")
                 return
-
             file_id = None
             file_name = None
             media_type = None
@@ -405,7 +431,6 @@ def register_handlers(dp: Dispatcher, db: Database, shortener: Shortener, bot: B
                 logger.warning(f"Unsupported media type from user {user_id} in chat {chat_id}")
                 await message.reply("Unsupported media type. Send a photo, video, or document. 😕")
                 return
-
             if file_id and file_name and file_size is not None:
                 raw_link = f"telegram://file/{file_id}"
                 await db_instance.save_media(user_id, media_type, file_id, file_name, raw_link, file_size)
@@ -451,12 +476,10 @@ def register_handlers(dp: Dispatcher, db: Database, shortener: Shortener, bot: B
             if not post_channels:
                 logger.warning(f"No post channels configured for user {user_id}")
                 return
-
             settings = await db_instance.get_settings(user_id)
             backup_link = settings.get("backup_link", "")
             how_to_download = settings.get("how_to_download", "")
             poster_url = await fetch_poster(file_name)
-
             keyboard = InlineKeyboardMarkup(inline_keyboard=[
                 [InlineKeyboardButton(text="Download 📥", url=short_link)]
             ])
@@ -464,7 +487,6 @@ def register_handlers(dp: Dispatcher, db: Database, shortener: Shortener, bot: B
                 keyboard.inline_keyboard.append([InlineKeyboardButton(text="Backup Link 🔄", url=backup_link)])
             if how_to_download and how_to_download.startswith("http"):
                 keyboard.inline_keyboard.append([InlineKeyboardButton(text="How to Download ❓", url=how_to_download)])
-
             for channel_id in post_channels:
                 try:
                     if not await check_admin_status(bot, channel_id, bot.id):

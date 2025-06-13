@@ -1,11 +1,19 @@
 import asyncio
+import logging
 from pyrogram import Client, filters
+from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from database import media_collection
-from channel import get_user_settings
+from bot import app, logger, get_user_settings, validate_channel
 from shortener import get_shortlink
-from bot import app, logger
 from utils import fetch_poster
 from config import BOT_USERNAME
+
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    filename='bot.log'
+)
 
 async def save_media(user_id, file_id, file_name, file_size, raw_link, short_link, channel_id):
     logger.info(f"Saving media for user {user_id}: {file_name}")
@@ -23,33 +31,46 @@ async def save_media(user_id, file_id, file_name, file_size, raw_link, short_lin
         logger.info(f"Media {file_name} saved for user {user_id}")
     except Exception as e:
         logger.error(f"Error saving media for user {user_id}: {e}")
+        raise
 
 @app.on_message(filters.media & filters.chat(filters.channel))
 async def handle_media(client, message):
-    user_id = message.from_user.id
-    logger.info(f"Media received in channel {message.chat.id} from user {user_id}")
+    logger.info(f"Media received in channel {message.chat.id} from user {message.from_user.id if message.from_user else 'Unknown'}")
     try:
+        user_id = message.from_user.id if message.from_user else None
+        if not user_id:
+            logger.warning(f"Anonymous media in channel {message.chat.id}, ignoring")
+            return
+
         settings = await get_user_settings(user_id)
         db_channels = settings.get("db_channels", [])
         if str(message.chat.id) not in db_channels:
             logger.info(f"Channel {message.chat.id} not in user's db_channels")
             return
+
         file_id = message.media.file_id
-        file_name = message.media.file_name or "Unnamed File"
-        file_size = message.media.file_size or 0
+        file_name = getattr(message.media, 'file_name', "Unnamed File")
+        file_size = getattr(message.media, 'file_size', 0)
         raw_link = f"https://t.me/{BOT_USERNAME}?start=file_{file_id}"
         short_link = await get_shortlink(raw_link, user_id)
         await save_media(user_id, file_id, file_name, file_size, raw_link, short_link, str(message.chat.id))
-        
+
         # Auto-post to post channels
         post_channels = settings.get("post_channels", [])
         use_poster = settings.get("use_poster", True)
         poster_url = await fetch_poster(file_name) if use_poster else None
         backup_link = settings.get("backup_link", "")
         howto_link = settings.get("howto_link", "")
-        
+
         for channel_id in post_channels:
             try:
+                # Verify post channel admin status
+                is_valid, error_msg = await validate_channel(client, channel_id, user_id)
+                if not is_valid:
+                    logger.error(f"Cannot post to channel {channel_id}: {error_msg}")
+                    await message.reply(f"Error posting to channel {channel_id}: {error_msg}")
+                    continue
+
                 buttons = []
                 if backup_link:
                     buttons.append([InlineKeyboardButton("Backup Link", url=backup_link)])
@@ -73,10 +94,12 @@ async def handle_media(client, message):
                     logger.info(f"Posted message to channel {channel_id} for user {user_id}")
                 await asyncio.sleep(20)  # Delay to group episodes
             except Exception as e:
-                logger.error(f"Error posting to channel {channel_id}: {e}")
-        
+                logger.error(f"Error posting to channel {channel_id} for user {user_id}: {e}")
+                await message.reply(f"Failed to post to channel {channel_id}: {str(e)}")
+
         await message.reply(f"File saved! Link: {short_link}")
         logger.info(f"Media handling completed for user {user_id}")
+
     except Exception as e:
         logger.error(f"Error handling media for user {user_id}: {e}")
         await message.reply("Error processing media. Try again.")

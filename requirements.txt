@@ -2,3 +2,4 @@ pyrogram
 motor
 aiohttp
 python-telegram-bot
+imdbpy

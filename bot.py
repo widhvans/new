@@ -2,7 +2,7 @@ import asyncio
 import logging
 from pyrogram import Client, filters, enums
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
-from pyrogram.errors import PeerIdInvalid, ChatAdminRequired
+from pyrogram.errors import PeerIdInvalid, ChatAdminRequired, MessageNotModified
 from config import API_ID, API_HASH, BOT_TOKEN, BOT_USERNAME, SHORTLINK_URL, SHORTLINK_API
 from database import users_collection, settings_collection, media_collection
 from user import save_user
@@ -39,8 +39,25 @@ async def save_user_settings(user_id, key, value):
 
 async def validate_channel(client, channel_id, user_id, require_admin=True):
     logger.info(f"Validating channel {channel_id} for user {user_id}")
-    for attempt in range(2):  # Retry once after delay
+    for attempt in range(3):  # Retry 3 times
         try:
+            # Attempt to send a test message first to force API sync
+            try:
+                await client.send_message(channel_id, f"Test message from {BOT_USERNAME} to sync interaction.")
+                logger.info(f"Test message sent to channel {channel_id} on attempt {attempt + 1}")
+            except ChatAdminRequired:
+                if require_admin:
+                    logger.warning(f"Bot lacks permission to send message in channel {channel_id}")
+                    return False, "Bot needs admin permissions to send messages."
+            except PeerIdInvalid:
+                logger.warning(f"PEER_ID_INVALID when sending test message on attempt {attempt + 1}")
+                if attempt < 2:
+                    await asyncio.sleep(3)  # Wait before retry
+                    continue
+                return False, "Invalid channel ID or bot hasn't interacted with this channel."
+            except Exception as e:
+                logger.error(f"Error sending test message to channel {channel_id}: {e}")
+
             # Fetch chat to verify access
             chat = await client.get_chat(channel_id)
             logger.info(f"Chat fetched: {chat.title} ({chat.id})")
@@ -58,25 +75,15 @@ async def validate_channel(client, channel_id, user_id, require_admin=True):
                 if not any(admin.user.id == bot_id for admin in admins):
                     logger.warning(f"Bot not admin in channel {channel_id}")
                     return False, "Bot is not an admin in this channel."
-            # Send a test message to force API sync
-            try:
-                await client.send_message(channel_id, f"Test message from {BOT_USERNAME} to sync interaction.")
-                logger.info(f"Test message sent to channel {channel_id}")
-            except ChatAdminRequired:
-                if require_admin:
-                    logger.warning(f"Bot lacks permission to send message in channel {channel_id}")
-                    return False, "Bot needs admin permissions to send messages."
-            except Exception as e:
-                logger.error(f"Error sending test message to channel {channel_id}: {e}")
             return True, ""
         except PeerIdInvalid:
             logger.error(f"PEER_ID_INVALID for channel {channel_id} on attempt {attempt + 1}")
-            if attempt == 0:
-                await asyncio.sleep(2)  # Wait before retry
+            if attempt < 2:
+                await asyncio.sleep(3)  # Wait before retry
                 continue
             return False, "Invalid channel ID or bot hasn't interacted with this channel."
         except Exception as e:
-            logger.error(f"Error validating channel {channel_id}: {e}")
+            logger.error(f"Error validating channel {channel_id} on attempt {attempt + 1}: {e}")
             return False, str(e)
     return False, "Failed to validate channel after retries."
 
@@ -136,11 +143,15 @@ async def handle_callback(client, callback):
                 await callback.answer("Limit reached!")
                 logger.warning(f"User {user_id} attempted to add more than 5 post channels")
                 return
-            await callback.message.edit(
+            new_text = (
                 f"1. Add {BOT_USERNAME} to the post channel and make it an admin.\n"
-                f"2. Send the channel ID (e.g., -100123456789).",
-                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Go Back", callback_data="main_menu")]])
+                f"2. Send the channel ID (e.g., -100123456789)."
             )
+            if callback.message.text != new_text:  # Prevent MESSAGE_NOT_MODIFIED
+                await callback.message.edit(
+                    new_text,
+                    reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Go Back", callback_data="main_menu")]])
+                )
             await save_user_settings(user_id, "input_state", "add_post_channel")
             await callback.answer("Send the channel ID.")
             logger.info(f"Waiting for post channel ID from user {user_id}")
@@ -153,20 +164,26 @@ async def handle_callback(client, callback):
                 await callback.answer("Limit reached!")
                 logger.warning(f"User {user_id} attempted to add more than 5 db channels")
                 return
-            await callback.message.edit(
+            new_text = (
                 f"1. Add {BOT_USERNAME} to the database channel and make it an admin.\n"
-                f"2. Send the channel ID (e.g., -100123456789).",
-                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Go Back", callback_data="main_menu")]])
+                f"2. Send the channel ID (e.g., -100123456789)."
             )
+            if callback.message.text != new_text:  # Prevent MESSAGE_NOT_MODIFIED
+                await callback.message.edit(
+                    new_text,
+                    reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Go Back", callback_data="main_menu")]])
+                )
             await save_user_settings(user_id, "input_state", "add_db_channel")
             await callback.answer("Send the channel ID.")
             logger.info(f"Waiting for database channel ID from user {user_id}")
 
         elif data == "set_shortener":
-            await callback.message.edit(
-                "Send shortener URL and API (e.g., earn4link.in your_api_key)",
-                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Go Back", callback_data="main_menu")]])
-            )
+            new_text = "Send shortener URL and API (e.g., earn4link.in your_api_key)"
+            if callback.message.text != new_text:
+                await callback.message.edit(
+                    new_text,
+                    reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Go Back", callback_data="main_menu")]])
+                )
             await save_user_settings(user_id, "input_state", "set_shortener")
             await callback.answer("Please send shortener details.")
             logger.info(f"Waiting for shortener details from user {user_id}")
@@ -175,46 +192,58 @@ async def handle_callback(client, callback):
             settings = await get_user_settings(user_id)
             url = settings.get("shortlink", SHORTLINK_URL)
             api = settings.get("shortlink_api", SHORTLINK_API)
-            await callback.message.edit(
-                f"Current Shortener:\nURL: {url}\nAPI: {api}",
-                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Go Back", callback_data="main_menu")]])
-            )
+            new_text = f"Current Shortener:\nURL: {url}\nAPI: {api}"
+            if callback.message.text != new_text:
+                await callback.message.edit(
+                    new_text,
+                    reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Go Back", callback_data="main_menu")]])
+                )
             await callback.answer()
             logger.info(f"Shortener details displayed for user {user_id}")
 
         elif data == "set_backup_link":
-            await callback.message.edit(
-                "Send the backup link URL.",
-                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Go Back", callback_data="main_menu")]])
-            )
+            new_text = "Send the backup link URL."
+            if callback.message.text != new_text:
+                await callback.message.edit(
+                    new_text,
+                    reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Go Back", callback_data="main_menu")]])
+                )
             await save_user_settings(user_id, "input_state", "set_backup_link")
             await callback.answer("Please send backup link.")
             logger.info(f"Waiting for backup link from user {user_id}")
 
         elif data == "set_fsub":
-            await callback.message.edit(
+            new_text = (
                 f"1. Add {BOT_USERNAME} to the forced subscription channel.\n"
-                f"2. Send the channel ID (e.g., -100123456789).",
-                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Go Back", callback_data="main_menu")]])
+                f"2. Send the channel ID (e.g., -100123456789)."
             )
+            if callback.message.text != new_text:
+                await callback.message.edit(
+                    new_text,
+                    reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Go Back", callback_data="main_menu")]])
+                )
             await save_user_settings(user_id, "input_state", "set_fsub")
             await callback.answer("Send the channel ID.")
             logger.info(f"Waiting for fsub channel ID from user {user_id}")
 
         elif data == "total_files":
             count = await media_collection.count_documents({"user_id": user_id})
-            await callback.message.edit(
-                f"You have {count} files stored.",
-                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Go Back", callback_data="main_menu")]])
-            )
+            new_text = f"You have {count} files stored."
+            if callback.message.text != new_text:
+                await callback.message.edit(
+                    new_text,
+                    reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Go Back", callback_data="main_menu")]])
+                )
             await callback.answer()
             logger.info(f"Total files displayed for user {user_id}: {count}")
 
         elif data == "clone_search":
-            await callback.message.edit(
-                "Send search query to find files.",
-                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Go Back", callback_data="main_menu")]])
-            )
+            new_text = "Send search query to find files."
+            if callback.message.text != new_text:
+                await callback.message.edit(
+                    new_text,
+                    reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Go Back", callback_data="main_menu")]])
+                )
             await save_user_settings(user_id, "input_state", "clone_search")
             await callback.answer("Please send search query.")
             logger.info(f"Waiting for clone search query from user {user_id}")
@@ -223,18 +252,22 @@ async def handle_callback(client, callback):
             settings = await get_user_settings(user_id)
             current = settings.get("use_poster", True)
             await save_user_settings(user_id, "use_poster", not current)
-            await callback.message.edit(
-                f"Poster is now {'ON' if not current else 'OFF'}.",
-                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Go Back", callback_data="main_menu")]])
-            )
+            new_text = f"Poster is now {'ON' if not current else 'OFF'}."
+            if callback.message.text != new_text:
+                await callback.message.edit(
+                    new_text,
+                    reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Go Back", callback_data="main_menu")]])
+                )
             await callback.answer()
             logger.info(f"Poster toggled to {'ON' if not current else 'OFF'} for user {user_id}")
 
         elif data == "set_howto":
-            await callback.message.edit(
-                "Send the 'How to Download' tutorial link.",
-                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Go Back", callback_data="main_menu")]])
-            )
+            new_text = "Send the 'How to Download' tutorial link."
+            if callback.message.text != new_text:
+                await callback.message.edit(
+                    new_text,
+                    reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Go Back", callback_data="main_menu")]])
+                )
             await save_user_settings(user_id, "input_state", "set_howto")
             await callback.answer("Please send howto link.")
             logger.info(f"Waiting for howto link from user {user_id}")
@@ -248,6 +281,9 @@ async def handle_callback(client, callback):
                 reply_markup=InlineKeyboardMarkup(buttons)
             )
 
+    except MessageNotModified:
+        logger.warning(f"MESSAGE_NOT_MODIFIED for user {user_id}, ignoring")
+        await callback.answer()
     except Exception as e:
         logger.error(f"Error in handle_callback for user {user_id}: {e}")
         await callback.message.edit("Error occurred. Try again.")
@@ -279,7 +315,7 @@ async def handle_input(client, message):
                 await message.reply(
                     f"Error: {error_msg}\n"
                     f"Please ensure {BOT_USERNAME} is added to the channel and made an admin.\n"
-                    f"Verify the channel ID (e.g., -100123456789) is correct."
+                    f"Send a message in the channel (e.g., 'Hello') and verify the channel ID (e.g., -100123456789)."
                 )
                 logger.error(f"Channel validation failed for {channel_id}: {error_msg}")
                 return
@@ -319,7 +355,7 @@ async def handle_input(client, message):
                 await message.reply(
                     f"Error: {error_msg}\n"
                     f"Please ensure {BOT_USERNAME} is added to the channel.\n"
-                    f"Verify the channel ID (e.g., -100123456789) is correct."
+                    f"Send a message in the channel (e.g., 'Hello') and verify the channel ID (e.g., -100123456789)."
                 )
                 logger.error(f"Fsub channel validation failed for {channel_id}: {error_msg}")
                 return

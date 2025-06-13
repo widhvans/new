@@ -40,19 +40,18 @@ async def save_user_settings(user_id, key, value):
 async def validate_channel(client, channel_id, user_id):
     logger.info(f"Validating channel {channel_id} for user {user_id}")
     try:
-        # Resolve peer to ensure channel is accessible
-        await client.resolve_peer(channel_id)
+        # Try to get chat directly
         chat = await client.get_chat(channel_id)
         logger.info(f"Chat fetched: {chat.title} ({chat.id})")
-        # Check bot membership
         bot_id = (await client.get_me()).id
+        # Check bot membership
         try:
             member = await client.get_chat_member(channel_id, bot_id)
             if member.status not in [enums.ChatMemberStatus.MEMBER, enums.ChatMemberStatus.ADMINISTRATOR]:
                 logger.warning(f"Bot not a member in channel {channel_id}")
                 return False, "Bot is not a member of this channel."
-        except Exception:
-            logger.warning(f"Bot cannot access channel {channel_id}")
+        except Exception as e:
+            logger.error(f"Error checking bot membership in channel {channel_id}: {e}")
             return False, "Bot cannot access this channel."
         # Check admin status
         admins = await client.get_chat_members(channel_id, filter=enums.ChatMembersFilter.ADMINISTRATORS)
@@ -62,7 +61,15 @@ async def validate_channel(client, channel_id, user_id):
         return True, ""
     except PeerIdInvalid:
         logger.error(f"PEER_ID_INVALID for channel {channel_id}")
-        return False, "Invalid channel ID or bot hasn't interacted with this channel."
+        # Retry after a short delay to handle API sync issues
+        await asyncio.sleep(2)
+        try:
+            await client.resolve_peer(channel_id)
+            chat = await client.get_chat(channel_id)
+            return True, ""
+        except Exception as e:
+            logger.error(f"Retry failed for channel {channel_id}: {e}")
+            return False, "Invalid channel ID or bot hasn't interacted with this channel."
     except Exception as e:
         logger.error(f"Error validating channel {channel_id}: {e}")
         return False, str(e)
@@ -124,8 +131,9 @@ async def handle_callback(client, callback):
                 logger.warning(f"User {user_id} attempted to add more than 5 post channels")
                 return
             await callback.message.edit(
-                f"1. Add me to the post channel and make me an admin.\n"
-                f"2. Send the channel's invite link (e.g., t.me/+abc123 or @ChannelName) or channel ID (e.g., -100123456789).",
+                f"1. Add {BOT_USERNAME} to the post channel and make it an admin.\n"
+                f"2. Send the channel's invite link (e.g., t.me/+abc123 or @ChannelName).\n"
+                f"3. If you don't have an invite link, send the channel ID (e.g., -100123456789) after ensuring I'm in the channel.",
                 reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Go Back", callback_data="main_menu")]])
             )
             await save_user_settings(user_id, "input_state", "add_post_channel")
@@ -141,8 +149,9 @@ async def handle_callback(client, callback):
                 logger.warning(f"User {user_id} attempted to add more than 5 db channels")
                 return
             await callback.message.edit(
-                f"1. Add me to the database channel and make me an admin.\n"
-                f"2. Send the channel's invite link (e.g., t.me/+abc123 or @ChannelName) or channel ID (e.g., -100123456789).",
+                f"1. Add {BOT_USERNAME} to the database channel and make it an admin.\n"
+                f"2. Send the channel's invite link (e.g., t.me/+abc123 or @ChannelName).\n"
+                f"3. If you don't have an invite link, send the channel ID (e.g., -100123456789) after ensuring I'm in the channel.",
                 reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Go Back", callback_data="main_menu")]])
             )
             await save_user_settings(user_id, "input_state", "add_db_channel")
@@ -180,8 +189,9 @@ async def handle_callback(client, callback):
 
         elif data == "set_fsub":
             await callback.message.edit(
-                f"1. Add me to the forced subscription channel.\n"
-                f"2. Send the channel's invite link (e.g., t.me/+abc123 or @ChannelName) or channel ID (e.g., -100123456789).",
+                f"1. Add {BOT_USERNAME} to the forced subscription channel.\n"
+                f"2. Send the channel's invite link (e.g., t.me/+abc123 or @ChannelName).\n"
+                f"3. If you don't have an invite link, send the channel ID (e.g., -100123456789) after ensuring I'm in the channel.",
                 reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Go Back", callback_data="main_menu")]])
             )
             await save_user_settings(user_id, "input_state", "set_fsub")
@@ -268,7 +278,8 @@ async def handle_input(client, message):
                     logger.info(f"Joined channel: {chat.title} ({channel_id})")
                 except Exception as e:
                     await message.reply(
-                        "Invalid invite link or I couldn't join the channel. Ensure the link is correct and I'm not banned!"
+                        "Invalid invite link or I couldn't join the channel. Ensure the link is correct, public, and I'm not banned!\n"
+                        f"Alternatively, send the channel ID (e.g., -100123456789) after adding {BOT_USERNAME} as an admin."
                     )
                     logger.error(f"Error processing invite link {input_text} for user {user_id}: {e}")
                     return
@@ -279,7 +290,9 @@ async def handle_input(client, message):
             is_valid, error_msg = await validate_channel(client, channel_id, user_id)
             if not is_valid:
                 await message.reply(
-                    f"Error: {error_msg}\nPlease ensure I'm added to the channel, made an admin, and send a valid invite link or ID."
+                    f"Error: {error_msg}\n"
+                    f"Please ensure {BOT_USERNAME} is added to the channel and made an admin.\n"
+                    "Try sending the channel's invite link (e.g., t.me/+abc123) or verify the channel ID."
                 )
                 logger.error(f"Channel validation failed for {channel_id}: {error_msg}")
                 return
@@ -322,7 +335,8 @@ async def handle_input(client, message):
                     logger.info(f"Joined fsub channel: {chat.title} ({channel_id})")
                 except Exception as e:
                     await message.reply(
-                        "Invalid invite link or I couldn't join the channel. Ensure the link is correct and I'm not banned!"
+                        "Invalid invite link or I couldn't join the channel. Ensure the link is correct, public, and I'm not banned!\n"
+                        f"Alternatively, send the channel ID (e.g., -100123456789) after adding {BOT_USERNAME}."
                     )
                     logger.error(f"Error processing fsub invite link {input_text} for user {user_id}: {e}")
                     return
@@ -333,7 +347,9 @@ async def handle_input(client, message):
             is_valid, error_msg = await validate_channel(client, channel_id, user_id)
             if not is_valid:
                 await message.reply(
-                    f"Error: {error_msg}\nPlease ensure I'm added to the channel and send a valid invite link or ID."
+                    f"Error: {error_msg}\n"
+                    f"Please ensure {BOT_USERNAME} is added to the channel.\n"
+                    "Try sending the channel's invite link (e.g., t.me/+abc123) or verify the channel ID."
                 )
                 logger.error(f"Fsub channel validation failed for {channel_id}: {error_msg}")
                 return

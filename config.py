@@ -11,14 +11,14 @@ BOT_USERNAME = "@Complete_jwshw_bot"
 
 # Logging Configuration
 logging.basicConfig(
-    level=logging.WARNING,  # Suppress INFO logs, show WARNING and above
+    level=logging.DEBUG,  # Capture all logs including DEBUG
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     handlers=[
-        logging.FileHandler("bot.log"),
-        logging.StreamHandler()
+        logging.FileHandler("bot.log", mode='a'),  # Append to bot.log
+        logging.StreamHandler()  # Output to console
     ]
 )
 logging.getLogger("aiogram").setLevel(logging.WARNING)  # Suppress aiogram INFO logs
-logging.getLogger("database").setLevel(logging.WARNING)  # Suppress database INFO logs
+logging.getLogger("motor").setLevel(logging.WARNING)  # Suppress motor INFO logs
 logger = logging.getLogger(__name__)
-logger.setLevel(logging.DEBUG)  # Enable DEBUG for custom logs
+logger.setLevel(logging.DEBUG)  # Ensure custom logs are DEBUG

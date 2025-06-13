@@ -5,7 +5,8 @@ import logging
 # Configure logging
 logging.basicConfig(
     level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    filename='bot.log'
 )
 logger = logging.getLogger(__name__)
 
@@ -18,3 +19,4 @@ try:
     logger.info("MongoDB connection established")
 except Exception as e:
     logger.error(f"Failed to connect to MongoDB: {e}")
+    raise

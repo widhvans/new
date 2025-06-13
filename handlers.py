@@ -383,31 +383,29 @@ def register_handlers(dp: Dispatcher, db: Database, shortener: Shortener, bot: B
             logger.error(f"Error setting shortlink for user {user_id}: {e}")
             await message.reply("Failed to set shortlink. Try again. 😕", reply_markup=await channel_manager.get_main_menu(user_id))
 
-    async def is_database_channel(message: types.Message, db: Database):
-        chat_id = message.chat.id
+    @dp.message(lambda message: message.chat.type in ["group", "supergroup", "channel"])
+    async def handle_group_channel_message(message: types.Message):
         user_id = message.from_user.id if message.from_user else None
-        if not user_id:
-            logger.debug(f"No user_id in message from chat {chat_id}, likely anonymous admin")
-            return False
-        database_channels = await db.get_channels(user_id, "database")
-        is_db_channel = chat_id in database_channels
-        logger.debug(f"Chat {chat_id} {'is' if is_db_channel else 'is not'} a database channel for user {user_id}. Database channels: {database_channels}")
-        return is_db_channel
-
-    @dp.message(lambda message: is_database_channel(message, db))
-    async def handle_database_message(message: types.Message):
-        user_id = message.from_user.id
         chat_id = message.chat.id
-        logger.info(f"Received message in database channel {chat_id} from user {user_id} with content_type: {message.content_type}")
+        logger.info(f"Received message in group/channel {chat_id} from user {user_id or 'anonymous'} with content_type: {message.content_type}")
         try:
+            if not user_id:
+                logger.debug(f"Anonymous message in chat {chat_id}, skipping")
+                return
             if message.content_type in ["photo", "video", "document"]:
-                logger.info(f"Detected media message in database channel {chat_id} from user {user_id}")
+                logger.info(f"Detected media message in chat {chat_id} from user {user_id}")
                 await media_manager.index_media(bot, user_id, chat_id, message)
             else:
-                logger.debug(f"Ignoring non-media message in database channel {chat_id} from user {user_id}")
+                logger.debug(f"Ignoring non-media message in chat {chat_id} from user {user_id}")
         except Exception as e:
-            logger.error(f"Error handling database channel message from user {user_id} in chat {chat_id}: {e}", exc_info=True)
+            logger.error(f"Error handling group/channel message in chat {chat_id} from user {user_id}: {e}", exc_info=True)
             await message.reply("Failed to process message. Try again or contact support. 😕")
+
+    @dp.message()
+    async def handle_non_group_message(message: types.Message):
+        user_id = message.from_user.id
+        chat_id = message.chat.id
+        logger.debug(f"Ignoring message in non-group/channel chat {chat_id} from user {user_id} with content_type: {message.content_type}")
 
     @dp.callback_query(lambda c: c.data == "total_files")
     async def show_total_files(callback: types.CallbackQuery):
@@ -437,7 +435,7 @@ def register_handlers(dp: Dispatcher, db: Database, shortener: Shortener, bot: B
             for channel_id in post_channels:
                 try:
                     channel = await bot.get_chat(channel_id)
-                    is_admin = await channel_manager.check_admin_status(bot, channel_id, bot.id)
+                    is_admin = await media_manager.check_admin_status(bot, channel_id, bot.id)
                     response += f"- {channel.title or 'Unnamed'} ({channel_id}): {'Admin' if is_admin else 'Not Admin'}\n"
                 except Exception as e:
                     response += f"- {channel_id}: Error fetching details ({e})\n"
@@ -445,7 +443,7 @@ def register_handlers(dp: Dispatcher, db: Database, shortener: Shortener, bot: B
             for channel_id in database_channels:
                 try:
                     channel = await bot.get_chat(channel_id)
-                    is_admin = await channel_manager.check_admin_status(bot, channel_id, bot.id)
+                    is_admin = await media_manager.check_admin_status(bot, channel_id, bot.id)
                     response += f"- {channel.title or 'Unnamed'} ({channel_id}): {'Admin' if is_admin else 'Not Admin'}\n"
                 except Exception as e:
                     response += f"- {channel_id}: Error fetching details ({e})\n"
@@ -472,6 +470,26 @@ def register_handlers(dp: Dispatcher, db: Database, shortener: Shortener, bot: B
         except Exception as e:
             logger.error(f"Error in /debug_media for user {user_id}: {e}")
             await message.reply("Failed to fetch media details. Try again. 😕")
+
+    @dp.message(Command("test_index"))
+    async def test_index(message: types.Message):
+        user_id = message.from_user.id
+        logger.info(f"User {user_id} running /test_index")
+        try:
+            if message.content_type not in ["photo", "video", "document"]:
+                await message.reply("Please send a photo, video, or document to test indexing. 😕")
+                return
+            database_channels = await db.get_channels(user_id, "database")
+            if not database_channels:
+                await message.reply("No database channels set! Add one via 'Add Database Channel'. 🚫")
+                return
+            # Simulate indexing in the first database channel
+            chat_id = database_channels[0]
+            logger.info(f"Simulating media indexing for user {user_id} in database channel {chat_id}")
+            await media_manager.index_media(bot, user_id, chat_id, message)
+        except Exception as e:
+            logger.error(f"Error in /test_index for user {user_id}: {e}")
+            await message.reply("Failed to test indexing. Try again or contact support. 😕")
 
     @dp.message(Command("broadcast"))
     async def broadcast_command(message: types.Message, state: FSMContext):

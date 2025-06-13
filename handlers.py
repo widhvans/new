@@ -2,7 +2,7 @@ from aiogram import Dispatcher, types
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
-from aiogram.filters import Command, StateFilter, ContentType
+from aiogram.filters import Command, StateFilter, BaseFilter
 import asyncio
 import logging
 from database import Database
@@ -16,6 +16,10 @@ class BotStates(StatesGroup):
     SET_SHORTENER = State()
     SET_BACKUP_LINK = State()
     SET_HOW_TO_DOWNLOAD = State()
+
+class MediaFilter(BaseFilter):
+    async def __call__(self, message: types.Message) -> bool:
+        return message.content_type in [types.ContentType.PHOTO, types.ContentType.VIDEO, types.ContentType.DOCUMENT]
 
 def get_main_menu():
     keyboard = InlineKeyboardMarkup()
@@ -116,7 +120,7 @@ def register_handlers(dp: Dispatcher, db: Database, shortener: Shortener):
             f"<b>Successfully added shortlink API for {title}\n\nCurrent shortlink website: <code>{shortlink_url}</code>\nCurrent API: <code>{api}</code>.</b>"
         )
 
-    @dp.message(ContentType([types.ContentType.PHOTO, types.ContentType.VIDEO, types.ContentType.DOCUMENT]))
+    @dp.message(MediaFilter())
     async def handle_media(message: types.Message):
         user_id = message.from_user.id
         database_channels = await db.get_channels(user_id, "database")

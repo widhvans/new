@@ -2,7 +2,7 @@ from aiogram import Dispatcher, types, Bot
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, ChatMemberUpdated
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
-from aiogram.filters import Command, StateFilter, BaseFilter, ChatMemberUpdatedFilter
+from aiogram.filters import Command, StateFilter, BaseFilter, ChatMemberUpdatedFilter, IS_ADMIN
 import asyncio
 import logging
 from database import Database
@@ -24,10 +24,13 @@ class MediaFilter(BaseFilter):
         return message.content_type in [types.ContentType.PHOTO, types.ContentType.VIDEO, types.ContentType.DOCUMENT]
 
 class BotAdminFilter(ChatMemberUpdatedFilter):
+    def __init__(self):
+        super().__init__(member_status_changed=IS_ADMIN)
+    
     async def __call__(self, update: ChatMemberUpdated, bot: Bot) -> bool:
         if update.new_chat_member.user.id != bot.id:
             return False
-        return update.new_chat_member.status in ["administrator", "creator"]
+        return True
 
 def get_main_menu():
     keyboard = InlineKeyboardMarkup(inline_keyboard=[

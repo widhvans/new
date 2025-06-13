@@ -28,46 +28,50 @@ async def save_user_settings(user_id, key, value):
 @app.on_callback_query(filters.regex("add_post_channel"))
 async def add_post_channel(client, callback):
     user_id = callback.from_user.id
-    logger.info(f"Add post channel initiated by user {user_id}")
+    logger.info(f"Add post channel button clicked by user {user_id}")
     try:
         settings = await get_user_settings(user_id)
         post_channels = settings.get("post_channels", [])
         if len(post_channels) >= 5:
             await callback.message.edit("Max 5 post channels allowed!")
+            await callback.answer("Limit reached!")
             logger.warning(f"User {user_id} attempted to add more than 5 post channels")
             return
         await callback.message.edit(
             "Send channel ID (e.g., -100123456789). Make me admin first!",
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Go Back", callback_data="main_menu")]])
         )
-        # Store state to handle next message
         await save_user_settings(user_id, "input_state", "add_post_channel")
+        await callback.answer("Please send channel ID.")
         logger.info(f"Waiting for post channel ID from user {user_id}")
     except Exception as e:
         logger.error(f"Error in add_post_channel: {e}")
         await callback.message.edit("Error occurred. Try again.")
+        await callback.answer("Error occurred!")
 
 @app.on_callback_query(filters.regex("add_db_channel"))
 async def add_db_channel(client, callback):
     user_id = callback.from_user.id
-    logger.info(f"Add database channel initiated by user {user_id}")
+    logger.info(f"Add database channel button clicked by user {user_id}")
     try:
         settings = await get_user_settings(user_id)
         db_channels = settings.get("db_channels", [])
         if len(db_channels) >= 5:
             await callback.message.edit("Max 5 database channels allowed!")
+            await callback.answer("Limit reached!")
             logger.warning(f"User {user_id} attempted to add more than 5 db channels")
             return
         await callback.message.edit(
             "Send channel ID (e.g., -100123456789). Make me admin first!",
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Go Back", callback_data="main_menu")]])
         )
-        # Store state to handle next message
         await save_user_settings(user_id, "input_state", "add_db_channel")
+        await callback.answer("Please send channel ID.")
         logger.info(f"Waiting for database channel ID from user {user_id}")
     except Exception as e:
         logger.error(f"Error in add_db_channel: {e}")
         await callback.message.edit("Error occurred. Try again.")
+        await callback.answer("Error occurred!")
 
 @app.on_message(filters.text & filters.private)
 async def handle_channel_input(client, message):
@@ -98,7 +102,6 @@ async def handle_channel_input(client, message):
         else:
             await message.reply("Channel already connected!")
             logger.info(f"Channel {channel_id} already connected for user {user_id}")
-        # Clear input state
         await save_user_settings(user_id, "input_state", None)
         buttons = [
             [InlineKeyboardButton(f"Add More {channel_type.replace('_', ' ').title()}", callback_data=f"add_{channel_type}")],
@@ -108,3 +111,4 @@ async def handle_channel_input(client, message):
     except Exception as e:
         logger.error(f"Error handling channel input for user {user_id}: {e}")
         await message.reply("Invalid channel ID or error occurred!")
+        await save_user_settings(user_id, "input_state", None)

@@ -71,12 +71,18 @@ async def connect_channel(bot: Bot, user_id: int, channel_id: int, channel_type:
         channel_name = channel.title or "Unnamed Channel"
         existing_channels = await db_instance.get_channels(user_id, channel_type)
         if channel_id in existing_channels:
+            await bot.send_message(user_id, f"Channel {channel_name} is already connected as a {channel_type} channel! ✅")
             logger.info(f"{channel_type} channel {channel_id} already connected for user {user_id}")
             await state.clear()
             return False
         if len(existing_channels) >= 5:
             await bot.send_message(user_id, f"Max 5 {channel_type} channels allowed! 🚫")
             logger.warning(f"User {user_id} exceeded {channel_type} channel limit")
+            await state.clear()
+            return False
+        if not await check_admin_status(bot, channel_id, bot.id):
+            await bot.send_message(user_id, f"I’m not an admin in channel {channel_name}. Make me an admin and try again. 🚫")
+            logger.warning(f"Bot not admin in channel {channel_id} for user {user_id}")
             await state.clear()
             return False
         await db_instance.save_channel(user_id, channel_type, channel_id)
@@ -92,87 +98,9 @@ async def connect_channel(bot: Bot, user_id: int, channel_id: int, channel_type:
         return True
     except Exception as e:
         logger.error(f"Error connecting {channel_type} channel {channel_id} for user {user_id}: {e}")
-        await bot.send_message(user_id, f"Failed to connect {channel_type} channel. Try again. 😕")
+        await bot.send_message(user_id, f"Failed to connect channel {channel_id}. Check the ID and try again. 😕")
         await state.clear()
         return False
-
-async def preload_chats(bot: Bot):
-    logger.info("Preloading channels from database...")
-    channels = await db_instance.get_all_channels()
-    bot_user = await bot.get_me()
-    for channel in channels:
-        user_id = channel["user_id"]
-        for channel_type in ["post", "database"]:
-            channel_ids = channel.get(f"{channel_type}_channel_ids", [])
-            for channel_id in channel_ids:
-                retries = 3
-                for attempt in range(retries):
-                    try:
-                        await bot.get_chat(channel_id)
-                        chat_member = await bot.get_chat_member(channel_id, bot_user.id)
-                        if chat_member.status not in ["administrator", "creator"]:
-                            logger.warning(f"Bot is not admin in channel {channel_id}, removing from {channel_type} channels")
-                            await db_instance.db.channels.update_one(
-                                {"user_id": user_id},
-                                {"$pull": {f"{channel_type}_channel_ids": channel_id}}
-                            )
-                            await bot.send_message(user_id, f"Bot is no longer admin in channel {channel_id}. Removed from {channel_type} channels. 🚫")
-                            break
-                        logger.info(f"Verified bot is admin in channel {channel_id} for {channel_type}")
-                        break
-                    except Exception as e:
-                        logger.warning(f"Attempt {attempt + 1}/{retries}: Cannot verify channel {channel_id}: {e}")
-                        if attempt == retries - 1:
-                            logger.error(f"Failed to verify channel {channel_id} after {retries} attempts, keeping in database")
-    logger.info("Channel preloading completed")
-
-async def check_user_admin_status(bot: Bot, user_id: int, channel_type: str, state: FSMContext, message_id: int):
-    logger.info(f"Starting admin status check for user {user_id}, channel_type={channel_type}")
-    bot_id = (await bot.get_me()).id
-    timeout = 300  # 5 minutes
-    start_time = asyncio.get_event_loop().time()
-    recent_chats = set()
-
-    while asyncio.get_event_loop().time() - start_time < timeout:
-        try:
-            # Collect recent chats from user activity
-            async for message in bot.get_chat_history(user_id, limit=10):
-                if message.chat.type in ["channel", "supergroup"]:
-                    recent_chats.add(message.chat.id)
-            
-            # Check admin status in recent chats
-            for chat_id in recent_chats:
-                if await check_admin_status(bot, chat_id, bot_id):
-                    logger.info(f"Bot is admin in chat {chat_id} for user {user_id}")
-                    if await connect_channel(bot, user_id, chat_id, channel_type, state):
-                        try:
-                            await bot.edit_message_text(
-                                chat_id=user_id,
-                                message_id=message_id,
-                                text=f"Channel connected successfully! ✅\nReturning to main menu...",
-                                reply_markup=get_main_menu()
-                            )
-                            logger.info(f"Updated waiting message for user {user_id}")
-                        except Exception as e:
-                            logger.error(f"Failed to update waiting message for user {user_id}: {e}")
-                        return True
-            await asyncio.sleep(5)  # Poll every 5 seconds
-        except Exception as e:
-            logger.error(f"Error checking admin status for user {user_id}: {e}")
-            await asyncio.sleep(5)
-    
-    # Timeout reached
-    try:
-        await bot.edit_message_text(
-            chat_id=user_id,
-            message_id=message_id,
-            text="Timeout: No admin status detected. Please try again. 😕",
-            reply_markup=get_main_menu()
-        )
-        logger.info(f"Timeout reached for user {user_id}, admin check stopped")
-    except Exception as e:
-        logger.error(f"Failed to update timeout message for user {user_id}: {e}")
-    await state.clear()
 
 def register_handlers(dp: Dispatcher, db: Database, shortener: Shortener, bot: Bot):
     global db_instance
@@ -187,7 +115,7 @@ def register_handlers(dp: Dispatcher, db: Database, shortener: Shortener, bot: B
         welcome_msg = (
             "Welcome to your personal storage bot! 📦\n"
             "Save media, auto-post to channels, and more.\n"
-            "To connect channels, use the menu and make me an admin. I’ll connect automatically.\n"
+            "To connect channels, use the menu, make me an admin, and send the channel ID.\n"
             "Let's get started! 🚀"
         )
         keyboard = InlineKeyboardMarkup(inline_keyboard=[
@@ -196,7 +124,6 @@ def register_handlers(dp: Dispatcher, db: Database, shortener: Shortener, bot: B
         try:
             await message.reply(welcome_msg, reply_markup=keyboard)
             logger.info(f"Sent start message to user {user_id}")
-            await preload_chats(bot)
         except Exception as e:
             logger.error(f"Failed to send start message to user {user_id}: {e}")
 
@@ -227,14 +154,13 @@ def register_handlers(dp: Dispatcher, db: Database, shortener: Shortener, bot: B
                 return
             await state.set_state(BotStates.SET_POST_CHANNEL)
             logger.info(f"Set FSM state SET_POST_CHANNEL for user {user_id}")
-            waiting_message = await callback.message.edit_text(
-                "Make me an admin in your post channel (public or private). I will connect automatically. ⏳\nWaiting for admin status...",
+            await callback.message.edit_text(
+                "Make me an admin in your post channel (public or private), then send the channel ID (e.g., -100123456789). 📢",
                 reply_markup=InlineKeyboardMarkup(inline_keyboard=[
                     [InlineKeyboardButton(text="Cancel ❌", callback_data="cancel_add_channel")]
                 ])
             )
-            logger.info(f"Prompted user {user_id} to add post channel with waiting interface")
-            asyncio.create_task(check_user_admin_status(bot, user_id, "post", state, waiting_message.message_id))
+            logger.info(f"Prompted user {user_id} to add post channel and send channel ID")
             await callback.answer()
         except Exception as e:
             logger.error(f"Failed to prompt post channel setup for user {user_id}: {e}")
@@ -254,14 +180,13 @@ def register_handlers(dp: Dispatcher, db: Database, shortener: Shortener, bot: B
                 return
             await state.set_state(BotStates.SET_DATABASE_CHANNEL)
             logger.info(f"Set FSM state SET_DATABASE_CHANNEL for user {user_id}")
-            waiting_message = await callback.message.edit_text(
-                "Make me an admin in your database channel (public or private). I will connect automatically. ⏳\nWaiting for admin status...",
+            await callback.message.edit_text(
+                "Make me an admin in your database channel (public or private), then send the channel ID (e.g., -100123456789). 🗄️",
                 reply_markup=InlineKeyboardMarkup(inline_keyboard=[
                     [InlineKeyboardButton(text="Cancel ❌", callback_data="cancel_add_channel")]
                 ])
             )
-            logger.info(f"Prompted user {user_id} to add database channel with waiting interface")
-            asyncio.create_task(check_user_admin_status(bot, user_id, "database", state, waiting_message.message_id))
+            logger.info(f"Prompted user {user_id} to add database channel and send channel ID")
             await callback.answer()
         except Exception as e:
             logger.error(f"Failed to prompt database channel setup for user {user_id}: {e}")
@@ -280,6 +205,27 @@ def register_handlers(dp: Dispatcher, db: Database, shortener: Shortener, bot: B
         except Exception as e:
             logger.error(f"Error canceling channel addition for user {user_id}: {e}")
             await callback.message.reply("Failed to cancel. Try again. 😕")
+
+    @dp.message(StateFilter(BotStates.SET_POST_CHANNEL, BotStates.SET_DATABASE_CHANNEL))
+    async def process_channel_id(message: types.Message, state: FSMContext):
+        user_id = message.from_user.id
+        logger.info(f"User {user_id} sent channel ID: {message.text}")
+        try:
+            channel_id = int(message.text.strip())
+            if not str(channel_id).startswith("-100"):
+                await message.reply("Invalid channel ID format. Use format like -100123456789. 😕")
+                logger.warning(f"Invalid channel ID format sent by user {user_id}: {message.text}")
+                return
+            user_state = await state.get_state()
+            channel_type = "post" if user_state == BotStates.SET_POST_CHANNEL.state else "database"
+            await connect_channel(bot, user_id, channel_id, channel_type, state)
+            logger.info(f"Processed channel ID {channel_id} for user {user_id}, channel_type={channel_type}")
+        except ValueError:
+            await message.reply("Invalid channel ID. Please send a numeric ID like -100123456789. 😕")
+            logger.warning(f"Non-numeric channel ID sent by user {user_id}: {message.text}")
+        except Exception as e:
+            logger.error(f"Error processing channel ID for user {user_id}: {e}")
+            await message.reply("Failed to process channel ID. Try again. 😕")
 
     @dp.callback_query(lambda c: c.data == "see_post_channels")
     async def see_post_channels(callback: types.CallbackQuery):

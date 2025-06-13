@@ -11,18 +11,25 @@ class Database:
         self.db = None
 
     async def connect(self):
-        self.client = AsyncIOMotorClient(MONGO_URI)
-        self.db = self.client[DB_NAME]
-        logger.info("Connected to MongoDB")
+        try:
+            self.client = AsyncIOMotorClient(MONGO_URI)
+            self.db = self.client[DB_NAME]
+            logger.debug("Successfully connected to MongoDB")
+        except Exception as e:
+            logger.error(f"Failed to connect to MongoDB: {e}")
+            raise
 
     async def disconnect(self):
-        if self.client:
-            self.client.close()
-            logger.info("Disconnected from MongoDB")
+        try:
+            if self.client:
+                self.client.close()
+                logger.debug("Successfully disconnected from MongoDB")
+        except Exception as e:
+            logger.error(f"Error disconnecting from MongoDB: {e}")
 
     async def save_media(self, user_id, media_type, file_id, file_name, raw_link, file_size=None):
         try:
-            await self.db.media.insert_one({
+            result = await self.db.media.insert_one({
                 "user_id": user_id,
                 "media_type": media_type,
                 "file_id": file_id,
@@ -31,47 +38,61 @@ class Database:
                 "file_size": file_size,
                 "created_at": datetime.now()
             })
+            logger.debug(f"Saved media {file_name} for user {user_id}, ID: {result.inserted_id}")
         except Exception as e:
             logger.error(f"Error saving media for user {user_id}: {e}")
+            raise
 
     async def get_user_media(self, user_id):
         try:
-            return await self.db.media.find({"user_id": user_id}).to_list(None)
+            media = await self.db.media.find({"user_id": user_id}).to_list(None)
+            logger.debug(f"Fetched {len(media)} media files for user {user_id}")
+            return media
         except Exception as e:
             logger.error(f"Error fetching media for user {user_id}: {e}")
             return []
 
     async def save_channel(self, user_id, channel_type, channel_id):
         try:
-            await self.db.channels.update_one(
+            result = await self.db.channels.update_one(
                 {"user_id": user_id, "channel_type": channel_type},
                 {"$addToSet": {"channel_ids": channel_id}},
                 upsert=True
             )
+            logger.debug(f"Saved channel {channel_id} ({channel_type}) for user {user_id}")
+            return result
         except Exception as e:
             logger.error(f"Error saving channel for user {user_id}: {e}")
+            raise
 
     async def get_channels(self, user_id, channel_type):
         try:
             result = await self.db.channels.find_one({"user_id": user_id, "channel_type": channel_type})
-            return result.get("channel_ids", []) if result else []
+            channels = result.get("channel_ids", []) if result else []
+            logger.debug(f"Fetched {len(channels)} {channel_type} channels for user {user_id}")
+            return channels
         except Exception as e:
             logger.error(f"Error fetching channels for user {user_id}: {e}")
             return []
 
     async def save_shortener(self, chat_id, shortener_url, shortener_api):
         try:
-            await self.db.shorteners.update_one(
+            result = await self.db.shorteners.update_one(
                 {"chat_id": chat_id},
                 {"$set": {"url": shortener_url, "api": shortener_api}},
                 upsert=True
             )
+            logger.debug(f"Saved shortener for chat {chat_id}")
+            return result
         except Exception as e:
             logger.error(f"Error saving shortener for chat {chat_id}: {e}")
+            raise
 
     async def get_shortener(self, chat_id):
         try:
-            return await self.db.shorteners.find_one({"chat_id": chat_id})
+            shortener = await self.db.shorteners.find_one({"chat_id": chat_id})
+            logger.debug(f"Fetched shortener for chat {chat_id}: {bool(shortener)}")
+            return shortener
         except Exception as e:
             logger.error(f"Error fetching shortener for chat {chat_id}: {e}")
             return None
@@ -79,41 +100,50 @@ class Database:
     async def get_settings(self, chat_id):
         try:
             settings = await self.db.settings.find_one({"chat_id": chat_id}) or {}
-            return {
+            result = {
                 "shortlink": settings.get("shortlink", ""),
                 "shortlink_api": settings.get("shortlink_api", ""),
                 "enable_shortlink": settings.get("enable_shortlink", True),
                 "backup_link": settings.get("backup_link", ""),
                 "how_to_download": settings.get("how_to_download", "")
             }
+            logger.debug(f"Fetched settings for chat {chat_id}")
+            return result
         except Exception as e:
             logger.error(f"Error fetching settings for chat {chat_id}: {e}")
             return {}
 
     async def save_group_settings(self, chat_id, key, value):
         try:
-            await self.db.settings.update_one(
+            result = await self.db.settings.update_one(
                 {"chat_id": chat_id},
                 {"$set": {key: value}},
                 upsert=True
             )
+            logger.debug(f"Saved setting {key} for chat {chat_id}")
+            return result
         except Exception as e:
             logger.error(f"Error saving settings for chat {chat_id}: {e}")
+            raise
 
     async def save_clone_bot(self, user_id, token):
         try:
-            await self.db.clone_bots.update_one(
+            result = await self.db.clone_bots.update_one(
                 {"user_id": user_id},
                 {"$set": {"token": token, "created_at": datetime.now()}},
                 upsert=True
             )
+            logger.debug(f"Saved clone bot token for user {user_id}")
+            return result
         except Exception as e:
             logger.error(f"Error saving clone bot for user {user_id}: {e}")
             raise
 
     async def get_clone_bot(self, user_id):
         try:
-            return await self.db.clone_bots.find_one({"user_id": user_id})
+            clone_bot = await self.db.clone_bots.find_one({"user_id": user_id})
+            logger.debug(f"Fetched clone bot for user {user_id}: {bool(clone_bot)}")
+            return clone_bot
         except Exception as e:
             logger.error(f"Error fetching clone bot for user {user_id}: {e}")
             return None

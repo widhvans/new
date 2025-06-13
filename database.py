@@ -129,3 +129,15 @@ class Database:
         except Exception as e:
             logger.error(f"Error fetching all clone bots: {e}")
             return []
+
+    async def delete_clone_bot(self, user_id: int):
+        try:
+            result = await self.db.clones.delete_one({"user_id": user_id})
+            if result.deleted_count > 0:
+                logger.info(f"Deleted clone bot for user {user_id}")
+            else:
+                logger.warning(f"No clone bot found to delete for user {user_id}")
+            return result.deleted_count > 0
+        except Exception as e:
+            logger.error(f"Error deleting clone bot for user {user_id}: {e}")
+            return False

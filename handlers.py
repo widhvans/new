@@ -22,15 +22,16 @@ class MediaFilter(BaseFilter):
         return message.content_type in [types.ContentType.PHOTO, types.ContentType.VIDEO, types.ContentType.DOCUMENT]
 
 def get_main_menu():
-    keyboard = InlineKeyboardMarkup()
-    keyboard.add(InlineKeyboardButton("Add Post Channel", callback_data="add_post_channel"))
-    keyboard.add(InlineKeyboardButton("Add Database Channel", callback_data="add_database_channel"))
-    keyboard.add(InlineKeyboardButton("Set Shortener", callback_data="set_shortener"))
-    keyboard.add(InlineKeyboardButton("See Shortener", callback_data="see_shortener"))
-    keyboard.add(InlineKeyboardButton("Set Backup Link", callback_data="set_backup_link"))
-    keyboard.add(InlineKeyboardButton("Set How to Download", callback_data="set_how_to_download"))
-    keyboard.add(InlineKeyboardButton("Total Files", callback_data="total_files"))
-    keyboard.add(InlineKeyboardButton("Clone Search", callback_data="clone_search"))
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="Add Post Channel", callback_data="add_post_channel")],
+        [InlineKeyboardButton(text="Add Database Channel", callback_data="add_database_channel")],
+        [InlineKeyboardButton(text="Set Shortener", callback_data="set_shortener")],
+        [InlineKeyboardButton(text="See Shortener", callback_data="see_shortener")],
+        [InlineKeyboardButton(text="Set Backup Link", callback_data="set_backup_link")],
+        [InlineKeyboardButton(text="Set How to Download", callback_data="set_how_to_download")],
+        [InlineKeyboardButton(text="Total Files", callback_data="total_files")],
+        [InlineKeyboardButton(text="Clone Search", callback_data="clone_search")]
+    ])
     return keyboard
 
 def register_handlers(dp: Dispatcher, db: Database, shortener: Shortener):
@@ -43,8 +44,9 @@ def register_handlers(dp: Dispatcher, db: Database, shortener: Shortener):
             "I can save your media, auto-post to channels, and more.\n"
             "Let's get started!"
         )
-        keyboard = InlineKeyboardMarkup()
-        keyboard.add(InlineKeyboardButton("Let's Begin", callback_data="main_menu"))
+        keyboard = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="Let's Begin", callback_data="main_menu")]
+        ])
         await message.reply(welcome_msg, reply_markup=keyboard)
 
     @dp.callback_query(lambda c: c.data == "main_menu")
@@ -158,12 +160,13 @@ def register_handlers(dp: Dispatcher, db: Database, shortener: Shortener):
 
         poster_url = await fetch_poster(file_name)
 
-        keyboard = InlineKeyboardMarkup()
-        keyboard.add(InlineKeyboardButton("Download", url=short_link))
+        keyboard = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="Download", url=short_link)]
+        ])
         if backup_link:
-            keyboard.add(InlineKeyboardButton("Backup Link", url=backup_link))
+            keyboard.inline_keyboard.append([InlineKeyboardButton(text="Backup Link", url=backup_link)])
         if how_to_download:
-            keyboard.add(InlineKeyboardButton("How to Download", url=how_to_download))
+            keyboard.inline_keyboard.append([InlineKeyboardButton(text="How to Download", url=how_to_download)])
 
         for channel_id in post_channels:
             if poster_url:

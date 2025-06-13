@@ -12,7 +12,6 @@ class MediaManager:
         self.db = db
         self.shortener = shortener
         self.imdb = Cinemagoer()
-        self.pending_posts = {}  # {user_id: {file_name_base: [media_items]}}
 
     def extract_metadata(self, file_name: str):
         logger.debug(f"Extracting metadata from file_name: {file_name}")
@@ -30,9 +29,9 @@ class MediaManager:
         return metadata
 
     async def index_media(self, bot: Bot, user_id: int, chat_id: int, message):
-        logger.info(f"Attempting to index media for user {user_id} in chat {chat_id}")
+        logger.info(f"Indexing media for user {user_id} in database channel {chat_id}")
         try:
-            logger.debug(f"Checking if chat {chat_id} is a database channel for user {user_id}")
+            logger.debug(f"Validating database channel {chat_id} for user {user_id}")
             database_channels = await self.db.get_channels(user_id, "database")
             logger.info(f"Fetched database channels for user {user_id}: {database_channels}")
             if not database_channels:
@@ -56,13 +55,13 @@ class MediaManager:
                 )
                 logger.warning(f"Chat {chat_id} is not a database channel for user {user_id}. Configured channels: {database_channels}")
                 return False
-            logger.debug(f"Verifying bot admin status in chat {chat_id}")
+            logger.debug(f"Checking bot permissions in channel {chat_id}")
             if not await self.check_admin_status(bot, chat_id, bot.id):
-                await message.reply("I’m not an admin in this database channel. Make me an admin to index media. 🚫")
-                logger.warning(f"Bot not admin in database channel {chat_id} for user {user_id}")
+                await message.reply("I’m not an admin in this database channel or lack message read permissions. Make me an admin with full rights. 🚫")
+                logger.warning(f"Bot not admin or lacks permissions in database channel {chat_id} for user {user_id}")
                 return False
 
-            logger.debug(f"Extracting media details from message in chat {chat_id}")
+            logger.debug(f"Extracting media from message in chat {chat_id}")
             file_id, file_name, media_type, file_size = None, None, None, None
             if message.photo:
                 file_id = message.photo[-1].file_id
@@ -88,19 +87,19 @@ class MediaManager:
             if file_id and file_name and file_size is not None:
                 raw_link = f"telegram://file/{file_id}"
                 metadata = self.extract_metadata(file_name)
-                logger.info(f"Saving media to database for user {user_id}: {file_name}")
+                logger.info(f"Saving media to MongoDB: {file_name} for user {user_id}")
                 await self.db.save_media(user_id, media_type, file_id, file_name, raw_link, file_size, metadata)
-                logger.info(f"Successfully indexed media {file_name} (type: {media_type}, size: {file_size} bytes) for user {user_id} in chat {chat_id}")
+                logger.info(f"Indexed media {file_name} (type: {media_type}, size: {file_size} bytes) for user {user_id} in chat {chat_id}")
 
-                self.schedule_post(bot, user_id, {
+                await self.post_media(bot, user_id, {
                     "file_id": file_id,
                     "file_name": file_name,
                     "raw_link": raw_link,
                     "file_size": file_size,
                     "metadata": metadata
                 })
-                await message.reply("Media indexed! Will post to your channels shortly. ✅")
-                logger.info(f"Scheduled posting for media {file_name} for user {user_id}")
+                await message.reply("Media indexed and posted to your channels! ✅")
+                logger.info(f"Completed indexing and posting for media {file_name} for user {user_id}")
                 return True
             else:
                 await message.reply("Invalid media file. Try again. 😕")
@@ -111,29 +110,7 @@ class MediaManager:
             await message.reply("Failed to index media. Try again or contact support. 😕")
             return False
 
-    def schedule_post(self, bot: Bot, user_id: int, media_item):
-        base_name = media_item["metadata"]["base_name"]
-        if user_id not in self.pending_posts:
-            self.pending_posts[user_id] = {}
-        if base_name not in self.pending_posts[user_id]:
-            self.pending_posts[user_id][base_name] = []
-        self.pending_posts[user_id][base_name].append(media_item)
-        logger.info(f"Scheduled post for media {base_name} for user {user_id}")
-        asyncio.create_task(self.process_pending_post(bot, user_id, base_name))
-
-    async def process_pending_post(self, bot: Bot, user_id: int, base_name: str):
-        try:
-            logger.info(f"Waiting 20 seconds for additional media for user {user_id}, base_name {base_name}")
-            await asyncio.sleep(20)
-            media_items = self.pending_posts[user_id].pop(base_name, [])
-            if not media_items:
-                logger.warning(f"No media items found for posting for user {user_id}, base_name {base_name}")
-                return
-            await self.post_media(bot, user_id, media_items)
-        except Exception as e:
-            logger.error(f"Error processing pending post for user {user_id}, base_name {base_name}: {e}")
-
-    async def post_media(self, bot: Bot, user_id: int, media_items):
+    async def post_media(self, bot: Bot, user_id: int, media_item):
         logger.info(f"Posting media for user {user_id}")
         try:
             settings = await self.db.get_settings(user_id)
@@ -143,13 +120,13 @@ class MediaManager:
             post_channels = await self.db.get_channels(user_id, "post")
             logger.info(f"Post channels for user {user_id}: {post_channels}")
             if shortener_enabled and (not shortener_settings or not shortener_settings.get("url") or not shortener_settings.get("api")):
-                logger.warning(f"Invalid or missing shortener settings for user {user_id}. Posting raw links.")
+                logger.warning(f"Invalid or missing shortener settings for user {user_id}. Using raw link.")
                 shortener_enabled = False
             if not post_channels:
                 logger.warning(f"No post channels configured for user {user_id}")
                 return
 
-            base_name = media_items[0]["metadata"]["base_name"]
+            base_name = media_item["metadata"]["base_name"]
             poster_url = None
             if use_poster:
                 try:
@@ -160,19 +137,18 @@ class MediaManager:
                 except Exception as e:
                     logger.warning(f"Failed to fetch poster for {base_name}: {e}")
 
-            caption = f"<b>{base_name}</b>\n\n"
-            keyboard = InlineKeyboardMarkup(inline_keyboard=[])
-            for item in sorted(media_items, key=lambda x: (x["metadata"]["season"] or 0, x["metadata"]["episode"] or 0, x["metadata"]["part"] or 0)):
-                link = item["raw_link"] if not shortener_enabled else await self.shortener.get_shortlink(self.db, item["raw_link"], user_id)
-                label = item["file_name"]
-                if item["metadata"]["season"]:
-                    label = f"S{item['metadata']['season']:02d}"
-                    if item["metadata"]["episode"]:
-                        label += f"E{item['metadata']['episode']:02d}"
-                elif item["metadata"]["part"]:
-                    label = f"Part {item['metadata']['part']}"
-                caption += f"{label} ({item['file_size'] / 1024 / 1024:.2f} MB): <a href='{link}'>Download</a>\n"
-                keyboard.inline_keyboard.append([InlineKeyboardButton(text=f"Download {label}", url=link)])
+            link = media_item["raw_link"] if not shortener_enabled else await self.shortener.get_shortlink(self.db, media_item["raw_link"], user_id)
+            label = media_item["file_name"]
+            if media_item["metadata"]["season"]:
+                label = f"S{media_item['metadata']['season']:02d}"
+                if media_item["metadata"]["episode"]:
+                    label += f"E{media_item['metadata']['episode']:02d}"
+            elif media_item["metadata"]["part"]:
+                label = f"Part {media_item['metadata']['part']}"
+            caption = f"<b>{base_name}</b>\n\n{label} ({media_item['file_size'] / 1024 / 1024:.2f} MB): <a href='{link}'>Download</a>\n"
+            keyboard = InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text=f"Download {label}", url=link)]
+            ])
 
             backup_link = settings.get("backup_link", "")
             how_to_download = settings.get("how_to_download", "")
@@ -188,12 +164,12 @@ class MediaManager:
                         continue
                     if poster_url and use_poster:
                         await bot.send_photo(channel_id, poster_url, caption=caption, reply_markup=keyboard, parse_mode="HTML")
-                        logger.info(f"Posted media group {base_name} with poster to channel {channel_id} for user {user_id}")
+                        logger.info(f"Posted media {base_name} with poster to channel {channel_id} for user {user_id}")
                     else:
                         await bot.send_message(channel_id, caption, reply_markup=keyboard, parse_mode="HTML")
-                        logger.info(f"Posted media group {base_name} to channel {channel_id} for user {user_id}")
+                        logger.info(f"Posted media {base_name} to channel {channel_id} for user {user_id}")
                 except Exception as e:
-                    logger.error(f"Failed to post media group {base_name} to channel {channel_id} for user {user_id}: {e}")
+                    logger.error(f"Failed to post media {base_name} to channel {channel_id} for user {user_id}: {e}")
         except Exception as e:
             logger.error(f"Error posting media for user {user_id}: {e}")
 

@@ -5,6 +5,7 @@ from aiogram.fsm.storage.memory import MemoryStorage
 from config import TOKEN
 from database import Database
 from handlers import register_handlers
+from clone_bot import register_clone_handlers
 from shortener import Shortener
 
 logging.basicConfig(level=logging.INFO)
@@ -26,6 +27,7 @@ async def on_shutdown():
 
 if __name__ == "__main__":
     register_handlers(dp, db, shortener)
+    register_clone_handlers(dp, db, shortener)
     dp.startup.register(on_startup)
     dp.shutdown.register(on_shutdown)
     asyncio.run(dp.start_polling(bot, skip_updates=True))

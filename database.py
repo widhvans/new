@@ -55,7 +55,7 @@ class Database:
             logger.error(f"Error fetching shortener for user {user_id}: {e}")
             return None
 
-    async def save_media(self, user_id: int, media_type: str, file_id: str, file_name: str, raw_link: str, file_size: int):
+    async def save_media(self, user_id: int, media_type: str, file_id: str, file_name: str, raw_link: str, file_size: int, metadata: dict):
         try:
             await self.db.media.insert_one({
                 "user_id": user_id,
@@ -63,7 +63,9 @@ class Database:
                 "file_id": file_id,
                 "file_name": file_name,
                 "raw_link": raw_link,
-                "file_size": file_size
+                "file_size": file_size,
+                "metadata": metadata,
+                "created_at": datetime.utcnow()
             })
             logger.info(f"Saved media {file_name} for user {user_id}")
         except Exception as e:
@@ -77,6 +79,19 @@ class Database:
             return media
         except Exception as e:
             logger.error(f"Error fetching media for user {user_id}: {e}")
+            return []
+
+    async def search_media(self, query: str, user_id: int = None):
+        try:
+            regex = {"$regex": query, "$options": "i"}
+            filter = {"file_name": regex}
+            if user_id:
+                filter["user_id"] = user_id
+            media = await self.db.media.find(filter).to_list(None)
+            logger.info(f"Fetched {len(media)} media files for query '{query}'{' for user ' + str(user_id) if user_id else ''}")
+            return media
+        except Exception as e:
+            logger.error(f"Error searching media for query '{query}': {e}")
             return []
 
     async def save_group_settings(self, user_id: int, setting_key: str, setting_value: str):
@@ -141,3 +156,33 @@ class Database:
         except Exception as e:
             logger.error(f"Error deleting clone bot for user {user_id}: {e}")
             return False
+
+    async def save_user(self, user_id: int):
+        try:
+            await self.db.users.update_one(
+                {"user_id": user_id},
+                {"$set": {"user_id": user_id}},
+                upsert=True
+            )
+            logger.info(f"Saved user {user_id}")
+        except Exception as e:
+            logger.error(f"Error saving user {user_id}: {e}")
+            raise
+
+    async def get_all_users(self):
+        try:
+            users = await self.db.users.find({}, {"user_id": 1, "_id": 0}).to_list(None)
+            logger.info(f"Fetched {len(users)} users")
+            return [user["user_id"] for user in users]
+        except Exception as e:
+            logger.error(f"Error fetching all users: {e}")
+            return []
+
+    async def get_all_database_owners(self):
+        try:
+            owners = await self.db.channels.find({"database_channel_ids": {"$ne": []}}, {"user_id": 1, "_id": 0}).to_list(None)
+            logger.info(f"Fetched {len(owners)} database owners")
+            return list(set(owner["user_id"] for owner in owners))
+        except Exception as e:
+            logger.error(f"Error fetching database owners: {e}")
+            return []

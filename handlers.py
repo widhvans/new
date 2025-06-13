@@ -28,6 +28,16 @@ class MediaFilter(BaseFilter):
     async def __call__(self, message: types.Message) -> bool:
         return message.content_type in [types.ContentType.PHOTO, types.ContentType.VIDEO, types.ContentType.DOCUMENT]
 
+async def check_subscription(bot: Bot, user_id: int, channel_id: int):
+    try:
+        if not channel_id:
+            return True
+        member = await bot.get_chat_member(channel_id, user_id)
+        return member.status in ["member", "administrator", "creator"]
+    except Exception as e:
+        logger.error(f"Error checking subscription for user {user_id} in channel {channel_id}: {e}")
+        return False
+
 def register_handlers(dp: Dispatcher, db: Database, shortener: Shortener, bot: Bot):
     channel_manager = ChannelManager(db)
     media_manager = MediaManager(db, shortener)
@@ -40,6 +50,22 @@ def register_handlers(dp: Dispatcher, db: Database, shortener: Shortener, bot: B
         logger.info(f"User {user_id} initiated /start")
         await state.clear()
         await db.save_user(user_id)
+        settings = await db.get_settings(user_id)
+        fsub_channel_id = settings.get("fsub_channel_id", None)
+        if not await check_subscription(bot, user_id, fsub_channel_id):
+            channel = await bot.get_chat(fsub_channel_id)
+            invite_link = await channel.export_invite_link()
+            keyboard = InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="Join Channel 📢", url=invite_link)],
+                [InlineKeyboardButton(text="Check Subscription ✅", callback_data="check_subscription")]
+            ])
+            await message.reply(
+                f"Please join our channel to use the bot! 😊\nAfter joining, click 'Check Subscription'.",
+                reply_markup=keyboard,
+                parse_mode="HTML"
+            )
+            logger.info(f"User {user_id} prompted to join FSub channel {fsub_channel_id}")
+            return
         welcome_msg = (
             f"Welcome to {BOT_USERNAME}! 📦\n\n"
             "I'm your personal storage bot. You can:\n"
@@ -58,13 +84,42 @@ def register_handlers(dp: Dispatcher, db: Database, shortener: Shortener, bot: B
         except Exception as e:
             logger.error(f"Failed to send start message to user {user_id}: {e}")
 
+    @dp.callback_query(lambda c: c.data == "check_subscription")
+    async def check_subscription_callback(callback: types.CallbackQuery, state: FSMContext):
+        user_id = callback.from_user.id
+        logger.info(f"User {user_id} checking subscription")
+        settings = await db.get_settings(user_id)
+        fsub_channel_id = settings.get("fsub_channel_id", None)
+        if await check_subscription(bot, user_id, fsub_channel_id):
+            await state.clear()
+            welcome_msg = (
+                f"Welcome to {BOT_USERNAME}! 📦\n\n"
+                "I'm your personal storage bot. You can:\n"
+                "- Save media files and get links\n"
+                "- Auto-post to your channels\n"
+                "- Search files with a clone bot\n"
+                "- Use any shortener\n"
+                "Click 'Let's Begin!' to start! 🚀"
+            )
+            keyboard = InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="Let's Begin! ▶️", callback_data="main_menu")]
+            ])
+            await callback.message.edit_text(welcome_msg, reply_markup=keyboard, parse_mode="HTML")
+            logger.info(f"User {user_id} passed subscription check")
+        else:
+            await callback.answer("You haven’t joined the channel yet! Please join and try again.", show_alert=True)
+            logger.info(f"User {user_id} failed subscription check")
+
     @dp.callback_query(lambda c: c.data == "main_menu")
     async def show_main_menu(callback: types.CallbackQuery, state: FSMContext):
         user_id = callback.from_user.id
         logger.info(f"User {user_id} requested main menu")
         await state.clear()
         try:
-            await callback.message.edit_text("Choose an option: 🛠️", reply_markup=await channel_manager.get_main_menu(user_id), parse_mode="HTML")
+            new_text = "Choose an option: 🛠️"
+            new_markup = await channel_manager.get_main_menu(user_id)
+            if callback.message.text != new_text or callback.message.reply_markup != new_markup:
+                await callback.message.edit_text(new_text, reply_markup=new_markup, parse_mode="HTML")
             logger.info(f"Displayed main menu for user {user_id}")
             await callback.answer()
         except Exception as e:
@@ -162,7 +217,9 @@ def register_handlers(dp: Dispatcher, db: Database, shortener: Shortener, bot: B
         try:
             channels = await db.get_channels(user_id, "post")
             if not channels:
-                await callback.message.edit_text("No post channels connected! 🚫", reply_markup=await channel_manager.get_main_menu(user_id))
+                new_text = "No post channels connected! 🚫"
+                if callback.message.text != new_text:
+                    await callback.message.edit_text(new_text, reply_markup=await channel_manager.get_main_menu(user_id))
                 logger.info(f"No post channels for user {user_id}")
                 await callback.answer()
                 return
@@ -175,7 +232,9 @@ def register_handlers(dp: Dispatcher, db: Database, shortener: Shortener, bot: B
                     InlineKeyboardButton(text="🗑️ Delete", callback_data=f"delete_post_{channel_id}")
                 ])
             keyboard.inline_keyboard.append([InlineKeyboardButton(text="⬅️ Back", callback_data="main_menu")])
-            await callback.message.edit_text("Connected Post Channels:", reply_markup=keyboard)
+            new_text = "Connected Post Channels:"
+            if callback.message.text != new_text or callback.message.reply_markup != keyboard:
+                await callback.message.edit_text(new_text, reply_markup=keyboard)
             logger.info(f"Displayed {len(channels)} post channels for user {user_id}")
             await callback.answer()
         except Exception as e:
@@ -189,7 +248,9 @@ def register_handlers(dp: Dispatcher, db: Database, shortener: Shortener, bot: B
         try:
             channels = await db.get_channels(user_id, "database")
             if not channels:
-                await callback.message.edit_text("No database channels connected! 🚫", reply_markup=await channel_manager.get_main_menu(user_id))
+                new_text = "No database channels connected! 🚫"
+                if callback.message.text != new_text:
+                    await callback.message.edit_text(new_text, reply_markup=await channel_manager.get_main_menu(user_id))
                 logger.info(f"No database channels for user {user_id}")
                 await callback.answer()
                 return
@@ -202,7 +263,9 @@ def register_handlers(dp: Dispatcher, db: Database, shortener: Shortener, bot: B
                     InlineKeyboardButton(text="🗑️ Delete", callback_data=f"delete_db_{channel_id}")
                 ])
             keyboard.inline_keyboard.append([InlineKeyboardButton(text="⬅️ Back", callback_data="main_menu")])
-            await callback.message.edit_text("Connected Database Channels:", reply_markup=keyboard)
+            new_text = "Connected Database Channels:"
+            if callback.message.text != new_text or callback.message.reply_markup != keyboard:
+                await callback.message.edit_text(new_text, reply_markup=keyboard)
             logger.info(f"Displayed {len(channels)} database channels for user {user_id}")
             await callback.answer()
         except Exception as e:
@@ -308,7 +371,9 @@ def register_handlers(dp: Dispatcher, db: Database, shortener: Shortener, bot: B
         logger.info(f"User {user_id} checking total files")
         try:
             media_files = await db.get_user_media(user_id)
-            await callback.message.edit_text(f"Total files: {len(media_files)} 📊", reply_markup=await channel_manager.get_main_menu(user_id))
+            new_text = f"Total files: {len(media_files)} 📊"
+            if callback.message.text != new_text:
+                await callback.message.edit_text(new_text, reply_markup=await channel_manager.get_main_menu(user_id))
             logger.info(f"Displayed total files ({len(media_files)}) for user {user_id}")
             await callback.answer()
         except Exception as e:
@@ -439,7 +504,8 @@ def register_handlers(dp: Dispatcher, db: Database, shortener: Shortener, bot: B
                 new_text = f"Current Shortener: 👀\nWebsite: <code>{shortener_settings['url']}</code>\nAPI: <code>{shortener_settings['api']}</code>\n{test_status}"
             else:
                 new_text = "No shortener set! 🚫"
-            await callback.message.edit_text(new_text, reply_markup=new_markup, parse_mode="HTML")
+            if callback.message.text != new_text or callback.message.reply_markup != new_markup:
+                await callback.message.edit_text(new_text, reply_markup=new_markup, parse_mode="HTML")
             await callback.answer()
             logger.info(f"Displayed shortener for user {user_id}")
         except Exception as e:
@@ -558,11 +624,9 @@ def register_handlers(dp: Dispatcher, db: Database, shortener: Shortener, bot: B
                     [InlineKeyboardButton(text="⬅️ Back", callback_data="main_menu")]
                 ])
                 username = existing_clone.get('username', 'Unknown')
-                await callback.message.edit_text(
-                    f"You already have a search bot! 🤖\nUsername: <code>{username}</code>\nStart it with /start.",
-                    reply_markup=keyboard,
-                    parse_mode="HTML"
-                )
+                new_text = f"You already have a search bot! 🤖\nUsername: <code>{username}</code>\nStart it with /start."
+                if callback.message.text != new_text or callback.message.reply_markup != keyboard:
+                    await callback.message.edit_text(new_text, reply_markup=keyboard, parse_mode="HTML")
                 await callback.answer()
                 logger.info(f"User {user_id} already has a clone bot")
                 return
@@ -643,10 +707,9 @@ def register_handlers(dp: Dispatcher, db: Database, shortener: Shortener, bot: B
         try:
             clone_bot = await db.get_clone_bot(user_id)
             if not clone_bot:
-                await callback.message.edit_text(
-                    "You need a search bot to use this feature! 🤖\nClick 'Get Your Search Bot' to set one up.",
-                    reply_markup=await channel_manager.get_main_menu(user_id)
-                )
+                new_text = "You need a search bot to use this feature! 🤖\nClick 'Get Your Search Bot' to set one up."
+                if callback.message.text != new_text:
+                    await callback.message.edit_text(new_text, reply_markup=await channel_manager.get_main_menu(user_id))
                 logger.warning(f"No clone bot found for user {user_id} for clone search")
                 await callback.answer()
                 return
@@ -703,6 +766,72 @@ def register_handlers(dp: Dispatcher, db: Database, shortener: Shortener, bot: B
     async def set_fsub(callback: types.CallbackQuery, state: FSMContext):
         user_id = callback.from_user.id
         logger.info(f"User {user_id} setting force subscribe")
-        await callback.message.edit_text("Force Subscribe is not implemented yet. 😕", reply_markup=await channel_manager.get_main_menu(user_id))
-        await callback.answer()
-        logger.info(f"Force subscribe placeholder displayed for user {user_id}")
+        try:
+            if user_id not in ADMIN_IDS:
+                new_text = "Only admins can set Force Subscribe! 🚫"
+                if callback.message.text != new_text:
+                    await callback.message.edit_text(new_text, reply_markup=await channel_manager.get_main_menu(user_id))
+                await callback.answer()
+                logger.warning(f"Unauthorized FSub attempt by user {user_id}")
+                return
+            await state.set_state(BotStates.SET_FSUB)
+            new_text = "Send the channel ID (e.g., -100123456789) for Force Subscribe. Make me an admin in the channel. 📢\nSend 'disable' to turn off FSub."
+            if callback.message.text != new_text:
+                await callback.message.edit_text(
+                    new_text,
+                    reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                        [InlineKeyboardButton(text="Cancel ❌", callback_data="cancel_fsub")]
+                    ])
+                )
+            await callback.answer()
+            logger.info(f"Prompted user {user_id} to set FSub channel")
+        except Exception as e:
+            logger.error(f"Error prompting FSub setup for user {user_id}: {e}")
+            await callback.message.reply("Failed to initiate FSub setup. Try again. 😕", reply_markup=await channel_manager.get_main_menu(user_id))
+
+    @dp.callback_query(lambda c: c.data == "cancel_fsub")
+    async def cancel_fsub(callback: types.CallbackQuery, state: FSMContext):
+        user_id = callback.from_user.id
+        logger.info(f"User {user_id} canceled FSub setup")
+        try:
+            await state.clear()
+            await callback.message.edit_text("FSub setup canceled. Returning to main menu... 😕", reply_markup=await channel_manager.get_main_menu(user_id))
+            logger.info(f"Canceled FSub setup for user {user_id}")
+            await callback.answer()
+        except Exception as e:
+            logger.error(f"Error canceling FSub setup for user {user_id}: {e}")
+            await callback.message.reply("Failed to cancel. Try again. 😕", reply_markup=await channel_manager.get_main_menu(user_id))
+
+    @dp.message(StateFilter(BotStates.SET_FSUB))
+    async def process_fsub(message: types.Message, state: FSMContext):
+        user_id = message.from_user.id
+        logger.info(f"User {user_id} processing FSub")
+        try:
+            input_text = message.text.strip()
+            if input_text.lower() == "disable":
+                await db.save_group_settings(user_id, "fsub_channel_id", None)
+                await message.reply("Force Subscribe disabled! ✅", reply_markup=await channel_manager.get_main_menu(user_id))
+                await state.clear()
+                logger.info(f"FSub disabled by user {user_id}")
+                return
+            channel_id = int(input_text)
+            if not str(channel_id).startswith("-100"):
+                await message.reply("Invalid channel ID format. Use format like -100123456789 or 'disable'. 😕", reply_markup=await channel_manager.get_main_menu(user_id))
+                logger.warning(f"Invalid FSub channel ID format by user {user_id}: {input_text}")
+                return
+            channel = await bot.get_chat(channel_id)
+            if not await channel_manager.check_admin_status(bot, channel_id, bot.id):
+                await message.reply(f"I’m not an admin in channel {channel.title or 'Unnamed Channel'}. Make me an admin and try again. 🚫", reply_markup=await channel_manager.get_main_menu(user_id))
+                logger.warning(f"Bot not admin in FSub channel {channel_id} for user {user_id}")
+                return
+            await db.save_group_settings(user_id, "fsub_channel_id", channel_id)
+            await message.reply(f"Force Subscribe set to {channel.title or 'Unnamed Channel'}! ✅", reply_markup=await channel_manager.get_main_menu(user_id))
+            await state.clear()
+            logger.info(f"FSub channel {channel_id} set by user {user_id}")
+        except ValueError:
+            await message.reply("Invalid channel ID. Please send a numeric ID like -100123456789 or 'disable'. 😕", reply_markup=await channel_manager.get_main_menu(user_id))
+            logger.warning(f"Non-numeric FSub channel ID by user {user_id}: {input_text}")
+        except Exception as e:
+            logger.error(f"Error processing FSub for user {user_id}: {e}")
+            await message.reply("Failed to set FSub. Try again. 😕", reply_markup=await channel_manager.get_main_menu(user_id))
+            await state.clear()

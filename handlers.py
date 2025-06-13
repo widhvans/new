@@ -1,8 +1,8 @@
 from aiogram import Dispatcher, types, Bot
-from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, ChatMemberUpdated
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
-from aiogram.filters import Command, StateFilter, BaseFilter
+from aiogram.filters import Command, StateFilter, BaseFilter, ChatMemberUpdatedFilter, IS_ADMIN
 import asyncio
 import logging
 from database import Database
@@ -28,6 +28,10 @@ def get_main_menu():
         [
             InlineKeyboardButton(text="📢 Add Post Channel", callback_data="add_post_channel"),
             InlineKeyboardButton(text="🗄️ Add Database Channel", callback_data="add_database_channel")
+        ],
+        [
+            InlineKeyboardButton(text="📋 See Post Channels", callback_data="see_post_channels"),
+            InlineKeyboardButton(text="📋 See Database Channels", callback_data="see_database_channels")
         ],
         [
             InlineKeyboardButton(text="🔗 Set Shortener", callback_data="set_shortener"),
@@ -61,58 +65,34 @@ async def check_admin_status(bot: Bot, channel_id: int, bot_id: int, retries=3, 
         await asyncio.sleep(delay * (2 ** attempt))  # Exponential backoff
     return False
 
-async def get_user_channels(bot: Bot, user_id: int) -> list:
-    channels = []
+async def connect_channel(bot: Bot, user_id: int, channel_id: int, channel_type: str, state: FSMContext):
     try:
-        # Fetch known channels from database
-        post_channels = await db_instance.get_channels(user_id, "post")
-        db_channels = await db_instance.get_channels(user_id, "database")
-        channels.extend(post_channels)
-        channels.extend(db_channels)
-        # Fetch recent channel chats (limited by Telegram API)
-        async for update in bot.get_updates():
-            if update.message and update.message.chat.type == "channel":
-                channels.append(update.message.chat.id)
-        channels = list(set(channels))  # Remove duplicates
-        logger.info(f"Fetched {len(channels)} channels for user {user_id}")
-    except Exception as e:
-        logger.error(f"Error fetching channels for user {user_id}: {e}")
-    return channels
-
-async def poll_admin_status(bot: Bot, user_id: int, channel_type: str, state: FSMContext, timeout=300):
-    start_time = asyncio.get_event_loop().time()
-    initial_channels = await get_user_channels(bot, user_id)
-    while asyncio.get_event_loop().time() - start_time < timeout:
+        channel = await bot.get_chat(channel_id)
+        channel_name = channel.title or "Unnamed Channel"
+        existing_channels = await db_instance.get_channels(user_id, channel_type)
+        if channel_id in existing_channels:
+            logger.info(f"{channel_type} channel {channel_id} already connected for user {user_id}")
+            return False
+        if len(existing_channels) >= 5:
+            await bot.send_message(user_id, f"Max 5 {channel_type} channels allowed! 🚫")
+            logger.warning(f"User {user_id} exceeded {channel_type} channel limit")
+            await state.clear()
+            return False
+        await db_instance.save_channel(user_id, channel_type, channel_id)
         try:
-            current_channels = await get_user_channels(bot, user_id)
-            new_channels = [ch for ch in current_channels if ch not in initial_channels]
-            for channel_id in new_channels + current_channels:
-                if await check_admin_status(bot, channel_id, bot.id):
-                    channel = await bot.get_chat(channel_id)
-                    channel_name = channel.title or "Unnamed Channel"
-                    existing_channels = await db_instance.get_channels(user_id, channel_type)
-                    if channel_id not in existing_channels and len(existing_channels) < 5:
-                        await db_instance.save_channel(user_id, channel_type, channel_id)
-                        try:
-                            await bot.send_message(user_id, f"Channel {channel_name} connected as {channel_type} channel! ✅")
-                            logger.info(f"Sent PM confirmation for {channel_type} channel {channel_id} to user {user_id}")
-                        except Exception as e:
-                            logger.warning(f"Failed to send PM for {channel_type} channel {channel_id} to user {user_id}: {e}")
-                            await bot.send_message(channel_id, f"Connected as {channel_type} channel, but couldn’t send PM. ✅")
-                        await bot.send_message(channel_id, f"Connected as {channel_type} channel! ✅")
-                        logger.info(f"Connected {channel_type} channel {channel_id} ({channel_name}) for user {user_id}")
-                        await state.clear()
-                        return True
+            await bot.send_message(user_id, f"Channel {channel_name} connected as {channel_type} channel! ✅")
+            logger.info(f"Sent PM confirmation for {channel_type} channel {channel_id} to user {user_id}")
         except Exception as e:
-            logger.error(f"Error polling admin status for user {user_id}: {e}")
-        await asyncio.sleep(10)  # Poll every 10 seconds
-    try:
-        await bot.send_message(user_id, f"Timeout: No new admin status detected for {channel_type} channel within 5 minutes. Try again. 😕")
-    except Exception:
-        pass
-    logger.warning(f"Timeout polling admin status for user {user_id}, channel_type {channel_type}")
-    await state.clear()
-    return False
+            logger.warning(f"Failed to send PM for {channel_type} channel {channel_id} to user {user_id}: {e}")
+            await bot.send_message(channel_id, f"Connected as {channel_type} channel, but couldn’t send PM. ✅")
+        await bot.send_message(channel_id, f"Connected as {channel_type} channel! ✅")
+        logger.info(f"Connected {channel_type} channel {channel_id} ({channel_name}) for user {user_id}")
+        await state.clear()
+        return True
+    except Exception as e:
+        logger.error(f"Error connecting {channel_type} channel {channel_id} for user {user_id}: {e}")
+        await state.clear()
+        return False
 
 def register_handlers(dp: Dispatcher, db: Database, shortener: Shortener, bot: Bot):
     global db_instance
@@ -156,6 +136,32 @@ def register_handlers(dp: Dispatcher, db: Database, shortener: Shortener, bot: B
         except Exception as e:
             logger.error(f"Failed to show main menu for user {user_id}: {e}")
 
+    @dp.chat_member(ChatMemberUpdatedFilter(member_status_changed=IS_ADMIN))
+    async def on_admin_status_change(chat_member: ChatMemberUpdated, state: FSMContext):
+        channel_id = chat_member.chat.id
+        logger.info(f"Bot admin status changed in channel {channel_id}")
+        try:
+            if chat_member.new_chat_member.user.id != bot.id:
+                logger.info(f"Ignoring non-bot admin update in channel {channel_id}")
+                return
+            if chat_member.new_chat_member.status not in ["administrator", "creator"]:
+                logger.info(f"Bot demoted in channel {channel_id}")
+                return
+            user_id = chat_member.from_user.id
+            user_state = await state.get_state()
+            channel_type = None
+            if user_state == BotStates.SET_POST_CHANNEL.state:
+                channel_type = "post"
+            elif user_state == BotStates.SET_DATABASE_CHANNEL.state:
+                channel_type = "database"
+            if not channel_type:
+                logger.info(f"No active connection state for user {user_id} in channel {channel_id}")
+                return
+            if await check_admin_status(bot, channel_id, bot.id):
+                await connect_channel(bot, user_id, channel_id, channel_type, state)
+        except Exception as e:
+            logger.error(f"Error handling admin status change in channel {channel_id}: {e}")
+
     @dp.callback_query(lambda c: c.data == "add_post_channel")
     async def add_post_channel(callback: types.CallbackQuery, state: FSMContext):
         user_id = callback.from_user.id
@@ -170,11 +176,10 @@ def register_handlers(dp: Dispatcher, db: Database, shortener: Shortener, bot: B
             await state.set_state(BotStates.SET_POST_CHANNEL)
             logger.info(f"Set FSM state SET_POST_CHANNEL for user {user_id}")
             await callback.message.edit_text(
-                "Make me an admin in your post channel. I’ll connect automatically within 5 minutes. 📢",
+                "Make me an admin in your post channel. I’ll connect automatically when added. 📢",
                 reply_markup=get_main_menu()
             )
             logger.info(f"Prompted user {user_id} to add post channel")
-            asyncio.create_task(poll_admin_status(bot, user_id, "post", state))
             await callback.answer()
         except Exception as e:
             logger.error(f"Failed to prompt post channel setup for user {user_id}: {e}")
@@ -195,16 +200,119 @@ def register_handlers(dp: Dispatcher, db: Database, shortener: Shortener, bot: B
             await state.set_state(BotStates.SET_DATABASE_CHANNEL)
             logger.info(f"Set FSM state SET_DATABASE_CHANNEL for user {user_id}")
             await callback.message.edit_text(
-                "Make me an admin in your database channel. I’ll connect automatically within 5 minutes. 🗄️",
+                "Make me an admin in your database channel. I’ll connect automatically when added. 🗄️",
                 reply_markup=get_main_menu()
             )
             logger.info(f"Prompted user {user_id} to add database channel")
-            asyncio.create_task(poll_admin_status(bot, user_id, "database", state))
             await callback.answer()
         except Exception as e:
             logger.error(f"Failed to prompt database channel setup for user {user_id}: {e}")
             await callback.message.reply("Failed to initiate database channel setup. Try again. 😕")
             await state.clear()
+
+    @dp.callback_query(lambda c: c.data == "see_post_channels")
+    async def see_post_channels(callback: types.CallbackQuery):
+        user_id = callback.from_user.id
+        logger.info(f"User {user_id} viewing post channels")
+        try:
+            channels = await db_instance.get_channels(user_id, "post")
+            if not channels:
+                await callback.message.edit_text("No post channels connected! 🚫", reply_markup=get_main_menu())
+                logger.info(f"No post channels for user {user_id}")
+                await callback.answer()
+                return
+            keyboard = InlineKeyboardMarkup(inline_keyboard=[])
+            for channel_id in channels:
+                channel = await bot.get_chat(channel_id)
+                channel_name = channel.title or "Unnamed Channel"
+                keyboard.inline_keyboard.append([
+                    InlineKeyboardButton(text=f"{channel_name}", callback_data=f"view_post_{channel_id}"),
+                    InlineKeyboardButton(text="🗑️ Delete", callback_data=f"delete_post_{channel_id}")
+                ])
+            keyboard.inline_keyboard.append([InlineKeyboardButton(text="⬅️ Back", callback_data="main_menu")])
+            await callback.message.edit_text("Connected Post Channels:", reply_markup=keyboard)
+            logger.info(f"Displayed {len(channels)} post channels for user {user_id}")
+            await callback.answer()
+        except Exception as e:
+            logger.error(f"Error showing post channels for user {user_id}: {e}")
+            await callback.message.reply("Failed to fetch post channels. Try again. 😕")
+
+    @dp.callback_query(lambda c: c.data == "see_database_channels")
+    async def see_database_channels(callback: types.CallbackQuery):
+        user_id = callback.from_user.id
+        logger.info(f"User {user_id} viewing database channels")
+        try:
+            channels = await db_instance.get_channels(user_id, "database")
+            if not channels:
+                await callback.message.edit_text("No database channels connected! 🚫", reply_markup=get_main_menu())
+                logger.info(f"No database channels for user {user_id}")
+                await callback.answer()
+                return
+            keyboard = InlineKeyboardMarkup(inline_keyboard=[])
+            for channel_id in channels:
+                channel = await bot.get_chat(channel_id)
+                channel_name = channel.title or "Unnamed Channel"
+                keyboard.inline_keyboard.append([
+                    InlineKeyboardButton(text=f"{channel_name}", callback_data=f"view_db_{channel_id}"),
+                    InlineKeyboardButton(text="🗑️ Delete", callback_data=f"delete_db_{channel_id}")
+                ])
+            keyboard.inline_keyboard.append([InlineKeyboardButton(text="⬅️ Back", callback_data="main_menu")])
+            await callback.message.edit_text("Connected Database Channels:", reply_markup=keyboard)
+            logger.info(f"Displayed {len(channels)} database channels for user {user_id}")
+            await callback.answer()
+        except Exception as e:
+            logger.error(f"Error showing database channels for user {user_id}: {e}")
+            await callback.message.reply("Failed to fetch database channels. Try again. 😕")
+
+    @dp.callback_query(lambda c: c.data.startswith("delete_post_"))
+    async def delete_post_channel(callback: types.CallbackQuery):
+        user_id = callback.from_user.id
+        logger.info(f"User {user_id} deleting post channel")
+        try:
+            channel_id = int(callback.data.split("_")[2])
+            channels = await db_instance.get_channels(user_id, "post")
+            if channel_id not in channels:
+                await callback.message.edit_text("Channel not found! 🚫", reply_markup=get_main_menu())
+                logger.warning(f"Post channel {channel_id} not found for user {user_id}")
+                await callback.answer()
+                return
+            await db_instance.db.channels.update_one(
+                {"user_id": user_id, "channel_type": "post"},
+                {"$pull": {"channel_ids": channel_id}}
+            )
+            channel = await bot.get_chat(channel_id)
+            channel_name = channel.title or "Unnamed Channel"
+            await callback.message.edit_text(f"Post channel {channel_name} deleted! ✅", reply_markup=get_main_menu())
+            logger.info(f"Deleted post channel {channel_id} for user {user_id}")
+            await callback.answer()
+        except Exception as e:
+            logger.error(f"Error deleting post channel for user {user_id}: {e}")
+            await callback.message.reply("Failed to delete post channel. Try again. 😕")
+
+    @dp.callback_query(lambda c: c.data.startswith("delete_db_"))
+    async def delete_database_channel(callback: types.CallbackQuery):
+        user_id = callback.from_user.id
+        logger.info(f"User {user_id} deleting database channel")
+        try:
+            channel_id = int(callback.data.split("_")[2])
+            channels = await db_instance.get_channels(user_id, "database")
+            if channel_id not in channels:
+                await callback.message.edit_text("Channel not found! 🚫", reply_markup=get_main_menu())
+                logger.warning(f"Database channel {channel_id} not found for user {user_id}")
+                await callback.answer()
+                return
+            await db_instance.db.channels.update_one(
+                {"user_id": user_id, "channel_type": "database"},
+                {"$pull": {"channel_ids": channel_id}}
+            )
+            channel = await bot.get_chat(channel_id)
+            channel_name = channel.title or "Unnamed Channel"
+            await callback.message.edit_text(f"Database channel {channel_name} deleted! ✅", reply_markup=get_main_menu())
+            logger.info(f"Deleted database channel {channel_id} for user {user_id}")
+            await callback.answer()
+        except Exception as e:
+            logger.error(f"Error deleting database channel for user {user_id}: {e}")
+            await callback.message.reply("Failed to delete database channel. Try again. 😕")
 
     @dp.message(Command("shortlink"))
     async def shortlink_command(message: types.Message):

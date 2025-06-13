@@ -29,9 +29,9 @@ class MediaManager:
         return metadata
 
     async def index_media(self, bot: Bot, user_id: int, chat_id: int, message):
-        logger.info(f"Indexing media for user {user_id} in database channel {chat_id}")
+        logger.info(f"Attempting to index media for user {user_id} in chat {chat_id}")
         try:
-            logger.debug(f"Validating database channel {chat_id} for user {user_id}")
+            logger.debug(f"Checking if chat {chat_id} is a database channel for user {user_id}")
             database_channels = await self.db.get_channels(user_id, "database")
             logger.info(f"Fetched database channels for user {user_id}: {database_channels}")
             if not database_channels:
@@ -48,20 +48,20 @@ class MediaManager:
                         logger.error(f"Error fetching channel {channel_id} title: {e}")
                         channel_titles.append(f"Channel {channel_id}")
                 await message.reply(
-                    f"This chat is not a database channel. Please send media to one of your database channels: {', '.join(channel_titles)}. 📥\nCheck 'See Database Channels'.",
+                    f"This is not a database channel. Send media to: {', '.join(channel_titles)}. 📥\nCheck 'See Database Channels'.",
                     reply_markup=InlineKeyboardMarkup(inline_keyboard=[
                         [InlineKeyboardButton(text="See Database Channels 🗄️", callback_data="see_database_channels")]
                     ])
                 )
                 logger.warning(f"Chat {chat_id} is not a database channel for user {user_id}. Configured channels: {database_channels}")
                 return False
-            logger.debug(f"Checking bot permissions in database channel {chat_id}")
+            logger.debug(f"Verifying bot permissions in database channel {chat_id}")
             if not await self.check_admin_status(bot, chat_id, bot.id):
-                await message.reply("I’m not an admin in this database channel or lack message read permissions. Make me an admin with full rights. 🚫")
+                await message.reply("I’m not an admin in this database channel or lack 'Read Messages' permission. Make me an admin with full rights. 🚫")
                 logger.warning(f"Bot not admin or lacks permissions in database channel {chat_id} for user {user_id}")
                 return False
 
-            logger.debug(f"Extracting media from message in chat {chat_id}")
+            logger.debug(f"Extracting media details from message in chat {chat_id}")
             file_id, file_name, media_type, file_size = None, None, None, None
             if message.photo:
                 file_id = message.photo[-1].file_id

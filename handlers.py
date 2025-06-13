@@ -96,43 +96,39 @@ async def connect_channel(bot: Bot, user_id: int, channel_id: int, channel_type:
         await state.clear()
         return False
 
-async def monitor_admin_status(bot: Bot, state_storage: dict, timeout=300):
-    offset = None
-    while True:
-        try:
-            updates = await bot.get_updates(offset=offset, timeout=30)
-            for update in updates:
-                offset = update.update_id + 1
-                if update.my_chat_member:
-                    channel_id = update.my_chat_member.chat.id
-                    user_id = update.my_chat_member.from_user.id
-                    logger.info(f"Detected bot added to channel {channel_id} by user {user_id}")
-                    if update.my_chat_member.new_chat_member.status not in ["administrator", "creator"]:
-                        logger.info(f"Bot not admin in channel {channel_id}, skipping")
-                        continue
-                    state = FSMContext(storage=state_storage, key=(user_id, user_id))
-                    user_state = await state.get_state()
-                    channel_type = None
-                    if user_state == BotStates.SET_POST_CHANNEL.state:
-                        channel_type = "post"
-                    elif user_state == BotStates.SET_DATABASE_CHANNEL.state:
-                        channel_type = "database"
-                    if not channel_type:
-                        logger.info(f"No active connection state for user {user_id} in channel {channel_id}")
-                        continue
-                    if await check_admin_status(bot, channel_id, bot.id):
-                        await connect_channel(bot, user_id, channel_id, channel_type, state)
-        except Exception as e:
-            logger.error(f"Error monitoring admin status: {e}")
-        await asyncio.sleep(5)
-
 def register_handlers(dp: Dispatcher, db: Database, shortener: Shortener, bot: Bot):
     global db_instance
     db_instance = db
     ADMINS = [123456789]  # Replace with actual admin IDs
 
-    # Start background admin status monitor
-    asyncio.create_task(monitor_admin_status(bot, dp.storage))
+    @dp.my_chat_member()
+    async def on_my_chat_member(update: types.ChatMemberUpdated, state: FSMContext):
+        channel_id = update.chat.id
+        user_id = update.from_user.id
+        logger.info(f"Detected bot added to channel {channel_id} by user {user_id}")
+        try:
+            if update.chat.type not in ["channel", "private", "supergroup"]:
+                logger.info(f"Ignoring non-channel update in chat {channel_id}")
+                return
+            if update.new_chat_member.user.id != bot.id:
+                logger.info(f"Ignoring non-bot update in channel {channel_id}")
+                return
+            if update.new_chat_member.status not in ["administrator", "creator"]:
+                logger.info(f"Bot not admin in channel {channel_id}, skipping")
+                return
+            user_state = await state.get_state()
+            channel_type = None
+            if user_state == BotStates.SET_POST_CHANNEL.state:
+                channel_type = "post"
+            elif user_state == BotStates.SET_DATABASE_CHANNEL.state:
+                channel_type = "database"
+            if not channel_type:
+                logger.info(f"No active connection state for user {user_id} in channel {channel_id}")
+                return
+            if await check_admin_status(bot, channel_id, bot.id):
+                await connect_channel(bot, user_id, channel_id, channel_type, state)
+        except Exception as e:
+            logger.error(f"Error handling my_chat_member update in channel {channel_id}: {e}")
 
     @dp.message(Command("start"))
     async def start_command(message: types.Message, state: FSMContext):
@@ -182,7 +178,7 @@ def register_handlers(dp: Dispatcher, db: Database, shortener: Shortener, bot: B
             await state.set_state(BotStates.SET_POST_CHANNEL)
             logger.info(f"Set FSM state SET_POST_CHANNEL for user {user_id}")
             await callback.message.edit_text(
-                "Make me an admin in your post channel. I’ll connect automatically within 5 minutes. 📢",
+                "Make me an admin in your post channel (public or private). I’ll connect automatically. 📢",
                 reply_markup=get_main_menu()
             )
             logger.info(f"Prompted user {user_id} to add post channel")
@@ -206,7 +202,7 @@ def register_handlers(dp: Dispatcher, db: Database, shortener: Shortener, bot: B
             await state.set_state(BotStates.SET_DATABASE_CHANNEL)
             logger.info(f"Set FSM state SET_DATABASE_CHANNEL for user {user_id}")
             await callback.message.edit_text(
-                "Make me an admin in your database channel. I’ll connect automatically within 5 minutes. 🗄️",
+                "Make me an admin in your database channel (public or private). I’ll connect automatically. 🗄️",
                 reply_markup=get_main_menu()
             )
             logger.info(f"Prompted user {user_id} to add database channel")

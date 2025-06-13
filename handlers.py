@@ -2,7 +2,7 @@ from aiogram import Dispatcher, types
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
-from aiogram.filters import Command
+from aiogram.filters import Command, StateFilter
 import asyncio
 from database import Database
 from shortener import Shortener
@@ -48,46 +48,46 @@ def register_handlers(dp: Dispatcher, db: Database, shortener: Shortener):
         await callback.message.edit_text("Choose an option:", reply_markup=get_main_menu())
 
     @dp.callback_query(lambda c: c.data == "add_post_channel")
-    async def add_post_channel(callback: types.CallbackQuery):
-        await BotStates.SET_POST_CHANNEL.set()
+    async def add_post_channel(callback: types.CallbackQuery, state: FSMContext):
+        await state.set_state(BotStates.SET_POST_CHANNEL)
         await callback.message.edit_text(
             "Please add me as an admin to your post channel and forward a message from that channel."
         )
 
-    @dp.message(state=BotStates.SET_POST_CHANNEL)
+    @dp.message(StateFilter(BotStates.SET_POST_CHANNEL))
     async def process_post_channel(message: types.Message, state: FSMContext):
         if message.forward_from_chat and message.forward_from_chat.type == "channel":
             channel_id = message.forward_from_chat.id
             channels = await db.get_channels(message.from_user.id, "post")
             if len(channels) >= 5:
                 await message.reply("Max 5 post channels allowed!")
-                await state.finish()
+                await state.clear()
                 return
             await db.save_channel(message.from_user.id, "post", channel_id)
             await message.reply("Post channel connected! Add more or go back.", reply_markup=get_main_menu())
-            await state.finish()
+            await state.clear()
         else:
             await message.reply("Please forward a message from a channel.")
 
     @dp.callback_query(lambda c: c.data == "add_database_channel")
-    async def add_database_channel(callback: types.CallbackQuery):
-        await BotStates.SET_DATABASE_CHANNEL.set()
+    async def add_database_channel(callback: types.CallbackQuery, state: FSMContext):
+        await state.set_state(BotStates.SET_DATABASE_CHANNEL)
         await callback.message.edit_text(
             "Please add me as an admin to your database channel and forward a message from that channel."
         )
 
-    @dp.message(state=BotStates.SET_DATABASE_CHANNEL)
+    @dp.message(StateFilter(BotStates.SET_DATABASE_CHANNEL))
     async def process_database_channel(message: types.Message, state: FSMContext):
         if message.forward_from_chat and message.forward_from_chat.type == "channel":
             channel_id = message.forward_from_chat.id
             channels = await db.get_channels(message.from_user.id, "database")
             if len(channels) >= 5:
                 await message.reply("Max 5 database channels allowed!")
-                await state.finish()
+                await state.clear()
                 return
             await db.save_channel(message.from_user.id, "database", channel_id)
             await message.reply("Database channel connected! Add more or go back.", reply_markup=get_main_menu())
-            await state.finish()
+            await state.clear()
         else:
             await message.reply("Please forward a message from a channel.")
 
@@ -163,9 +163,9 @@ def register_handlers(dp: Dispatcher, db: Database, shortener: Shortener):
 
         for channel_id in post_channels:
             if poster_url:
-                await message.bot.send_photo(channel_id, poster_url, caption=f"{file_name}\n{short_link}", reply_markup=keyboard)
+                await dp.bot.send_photo(channel_id, poster_url, caption=f"{file_name}\n{short_link}", reply_markup=keyboard)
             else:
-                await message.bot.send_message(channel_id, f"{file_name}\n{short_link}", reply_markup=keyboard)
+                await dp.bot.send_message(channel_id, f"{file_name}\n{short_link}", reply_markup=keyboard)
 
     async def fetch_poster(file_name):
         return None  # Implement Cinemagoer logic
@@ -198,13 +198,13 @@ def register_handlers(dp: Dispatcher, db: Database, shortener: Shortener):
         await message.reply(f"Users: {total_users}\nDatabase Owners: {total_db_owners}")
 
     @dp.callback_query(lambda c: c.data == "set_shortener")
-    async def set_shortener(callback: types.CallbackQuery):
-        await BotStates.SET_SHORTENER.set()
+    async def set_shortener(callback: types.CallbackQuery, state: FSMContext):
+        await state.set_state(BotStates.SET_SHORTENER)
         await callback.message.edit_text(
             "Send the shortener details in format: <code>shortlink mdisk.link your_api_key</code>"
         )
 
-    @dp.message(state=BotStates.SET_SHORTENER)
+    @dp.message(StateFilter(BotStates.SET_SHORTENER))
     async def process_shortener(message: types.Message, state: FSMContext):
         try:
             _, shortlink_url, api = message.text.split(" ")
@@ -218,7 +218,7 @@ def register_handlers(dp: Dispatcher, db: Database, shortener: Shortener):
             f"Shortener set!\nWebsite: <code>{shortlink_url}</code>\nAPI: <code>{api}</code>",
             reply_markup=get_main_menu()
         )
-        await state.finish()
+        await state.clear()
 
     @dp.callback_query(lambda c: c.data == "see_shortener")
     async def see_shortener(callback: types.CallbackQuery):

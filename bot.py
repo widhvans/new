@@ -21,12 +21,11 @@ def check_single_instance():
     with open(pid_file, "w") as f:
         f.write(str(os.getpid()))
 
-async def start_bot(token: str):
+async def start_bot(token: str, db: Database):
     try:
         bot = Bot(token=token)
         storage = MemoryStorage()
         dp = Dispatcher(storage=storage)
-        db = Database(MONGO_URI)
         shortener = Shortener()
         register_handlers(dp, db, shortener, bot)
         await bot.delete_webhook(drop_pending_updates=True)
@@ -38,10 +37,11 @@ async def start_bot(token: str):
 async def main():
     check_single_instance()
     logger.info("Starting main bot...")
-    await start_bot(BOT_TOKEN)
+    db = Database()  # Initialize single Database instance
+    await start_bot(BOT_TOKEN, db)
     # Start clone bots
-    clone_bots = await Database(MONGO_URI).get_all_clone_bots()
-    tasks = [start_bot(clone['token']) for clone in clone_bots]
+    clone_bots = await db.get_all_clone_bots()
+    tasks = [start_bot(clone['token'], db) for clone in clone_bots]
     if tasks:
         logger.info(f"Starting {len(tasks)} clone bots...")
         await asyncio.gather(*tasks)

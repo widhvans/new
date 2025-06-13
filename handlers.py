@@ -53,6 +53,7 @@ async def check_admin_status(bot, channel_id, bot_id, retries=3, delay=2):
         try:
             bot_member = await bot.get_chat_member(channel_id, bot_id)
             if bot_member.status in ["administrator", "creator"]:
+                logger.info(f"Confirmed bot is admin in channel {channel_id}, attempt {attempt + 1}")
                 return True
             logger.warning(f"Bot not admin in channel {channel_id}, attempt {attempt + 1}/{retries}")
         except Exception as e:
@@ -64,9 +65,11 @@ def register_handlers(dp: Dispatcher, db: Database, shortener: Shortener):
     ADMINS = [123456789]  # Replace with actual admin IDs
 
     @dp.message(Command("start"))
-    async def start_command(message: types.Message):
+    async def start_command(message: types.Message, state: FSMContext):
         user_id = message.from_user.id
         logger.info(f"User {user_id} initiated /start")
+        # Clear any existing state to prevent conflicts
+        await state.clear()
         welcome_msg = (
             "Welcome to your personal storage bot! 📦\n"
             "Save media, auto-post to channels, and more.\n"
@@ -83,9 +86,11 @@ def register_handlers(dp: Dispatcher, db: Database, shortener: Shortener):
             logger.error(f"Failed to send start message to user {user_id}: {e}")
 
     @dp.callback_query(lambda c: c.data == "main_menu")
-    async def show_main_menu(callback: types.CallbackQuery):
+    async def show_main_menu(callback: types.CallbackQuery, state: FSMContext):
         user_id = callback.from_user.id
         logger.info(f"User {user_id} requested main menu")
+        # Clear any existing state to prevent conflicts
+        await state.clear()
         new_text = "Choose an option: 🛠️"
         current_text = getattr(callback.message, 'text', '')
         current_markup = getattr(callback.message, 'reply_markup', None)
@@ -110,8 +115,9 @@ def register_handlers(dp: Dispatcher, db: Database, shortener: Shortener):
                 await callback.answer()
                 return
             await state.set_state(BotStates.SET_POST_CHANNEL)
+            logger.info(f"Set FSM state SET_POST_CHANNEL for user {user_id}")
             await callback.message.edit_text(
-                "Make me an admin in your post channel, then forward a message from that channel to confirm. 📢",
+                "Make me an admin in your post channel, then forward a message from that channel to my PM to confirm. 📢",
                 reply_markup=get_main_menu()
             )
             logger.info(f"Prompted user {user_id} to add post channel")
@@ -124,19 +130,26 @@ def register_handlers(dp: Dispatcher, db: Database, shortener: Shortener):
     @dp.message(StateFilter(BotStates.SET_POST_CHANNEL))
     async def process_post_channel(message: types.Message, state: FSMContext):
         user_id = message.from_user.id
-        logger.info(f"User {user_id} processing post channel")
+        logger.info(f"User {user_id} processing post channel in state SET_POST_CHANNEL")
         try:
-            if not message.forward_from_chat or message.forward_from_chat.type != "channel":
-                await message.reply("Forward a message from a channel. 🔄")
+            # Check if message is forwarded from a channel
+            channel_id = None
+            channel_name = "Unnamed Channel"
+            if message.forward_from_chat and message.forward_from_chat.type == "channel":
+                channel_id = message.forward_from_chat.id
+                channel_name = message.forward_from_chat.title or channel_name
+            else:
+                await message.reply("Please forward a message from a channel to my PM. 🔄")
                 logger.warning(f"User {user_id} sent invalid forward for post channel")
                 return
-            channel_id = message.forward_from_chat.id
-            channel_name = message.forward_from_chat.title or "Unnamed Channel"
+
             # Verify bot is admin with retries
             if not await check_admin_status(message.bot, channel_id, message.bot.id):
                 await message.reply("I’m not an admin in this channel. Make me an admin and forward again. 🚫")
                 logger.warning(f"Bot not admin in post channel {channel_id} for user {user_id}")
                 return
+
+            # Check for duplicates and limits
             channels = await db.get_channels(user_id, "post")
             if channel_id in channels:
                 await message.reply("This channel is already connected as a post channel! ✅", reply_markup=get_main_menu())
@@ -148,10 +161,13 @@ def register_handlers(dp: Dispatcher, db: Database, shortener: Shortener):
                 logger.warning(f"User {user_id} exceeded post channel limit")
                 await state.clear()
                 return
+
+            # Save channel
             await db.save_channel(user_id, "post", channel_id)
             await message.reply("Post channel connected! ✅ Add more or go back.", reply_markup=get_main_menu())
             try:
                 await message.bot.send_message(user_id, f"Channel {channel_name} connected as post channel! ✅")
+                logger.info(f"Sent PM confirmation for post channel {channel_id} to user {user_id}")
             except Exception as e:
                 logger.warning(f"Failed to send PM confirmation for post channel {channel_id} to user {user_id}: {e}")
                 await message.bot.send_message(channel_id, f"Connected as post channel, but couldn’t send PM to user. ✅")
@@ -174,8 +190,9 @@ def register_handlers(dp: Dispatcher, db: Database, shortener: Shortener):
                 await callback.answer()
                 return
             await state.set_state(BotStates.SET_DATABASE_CHANNEL)
+            logger.info(f"Set FSM state SET_DATABASE_CHANNEL for user {user_id}")
             await callback.message.edit_text(
-                "Make me an admin in your database channel, then forward a message from that channel to confirm. 🗄️",
+                "Make me an admin in your database channel, then forward a message from that channel to my PM to confirm. 🗄️",
                 reply_markup=get_main_menu()
             )
             logger.info(f"Prompted user {user_id} to add database channel")
@@ -188,19 +205,26 @@ def register_handlers(dp: Dispatcher, db: Database, shortener: Shortener):
     @dp.message(StateFilter(BotStates.SET_DATABASE_CHANNEL))
     async def process_database_channel(message: types.Message, state: FSMContext):
         user_id = message.from_user.id
-        logger.info(f"User {user_id} processing database channel")
+        logger.info(f"User {user_id} processing database channel in state SET_DATABASE_CHANNEL")
         try:
-            if not message.forward_from_chat or message.forward_from_chat.type != "channel":
-                await message.reply("Forward a message from a channel. 🔄")
+            # Check if message is forwarded from a channel
+            channel_id = None
+            channel_name = "Unnamed Channel"
+            if message.forward_from_chat and message.forward_from_chat.type == "channel":
+                channel_id = message.forward_from_chat.id
+                channel_name = message.forward_from_chat.title or channel_name
+            else:
+                await message.reply("Please forward a message from a channel to my PM. 🔄")
                 logger.warning(f"User {user_id} sent invalid forward for database channel")
                 return
-            channel_id = message.forward_from_chat.id
-            channel_name = message.forward_from_chat.title or "Unnamed Channel"
+
             # Verify bot is admin with retries
             if not await check_admin_status(message.bot, channel_id, message.bot.id):
                 await message.reply("I’m not an admin in this channel. Make me an admin and forward again. 🚫")
                 logger.warning(f"Bot not admin in database channel {channel_id} for user {user_id}")
                 return
+
+            # Check for duplicates and limits
             channels = await db.get_channels(user_id, "database")
             if channel_id in channels:
                 await message.reply("This channel is already connected as a database channel! ✅", reply_markup=get_main_menu())
@@ -212,10 +236,13 @@ def register_handlers(dp: Dispatcher, db: Database, shortener: Shortener):
                 logger.warning(f"User {user_id} exceeded database channel limit")
                 await state.clear()
                 return
+
+            # Save channel
             await db.save_channel(user_id, "database", channel_id)
             await message.reply("Database channel connected! ✅ Add more or go back.", reply_markup=get_main_menu())
             try:
                 await message.bot.send_message(user_id, f"Channel {channel_name} connected as database channel! ✅")
+                logger.info(f"Sent PM confirmation for database channel {channel_id} to user {user_id}")
             except Exception as e:
                 logger.warning(f"Failed to send PM confirmation for database channel {channel_id} to user {user_id}: {e}")
                 await message.bot.send_message(channel_id, f"Connected as database channel, but couldn’t send PM to user. ✅")
@@ -267,6 +294,7 @@ def register_handlers(dp: Dispatcher, db: Database, shortener: Shortener):
         try:
             # Fetch database channels
             database_channels = await db.get_channels(user_id, "database")
+            logger.info(f"Fetched {len(database_channels)} database channels for user {user_id}")
             if not database_channels:
                 logger.warning(f"No database channels configured for user {user_id}")
                 await message.reply("No database channels set! Add one via 'Add Database Channel' and make me an admin. 🚫")

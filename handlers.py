@@ -52,7 +52,7 @@ def register_handlers(dp: Dispatcher, db: Database, shortener: Shortener):
 
     @dp.message(Command("start"))
     async def start_command(message: types.Message):
-        logger.debug(f"User {message.from_user.id} initiated /start")
+        logger.info(f"User {message.from_user.id} initiated /start")
         welcome_msg = (
             "Welcome to your personal storage bot! 📦\n"
             "I can save your media, auto-post to channels, and more.\n"
@@ -69,7 +69,7 @@ def register_handlers(dp: Dispatcher, db: Database, shortener: Shortener):
 
     @dp.callback_query(lambda c: c.data == "main_menu")
     async def show_main_menu(callback: types.CallbackQuery):
-        logger.debug(f"User {callback.from_user.id} requested main menu")
+        logger.info(f"User {callback.from_user.id} requested main menu")
         new_text = "Choose an option: 🛠️"
         current_text = getattr(callback.message, 'text', '')
         current_markup = getattr(callback.message, 'reply_markup', None)
@@ -84,7 +84,7 @@ def register_handlers(dp: Dispatcher, db: Database, shortener: Shortener):
 
     @dp.callback_query(lambda c: c.data == "add_post_channel")
     async def add_post_channel(callback: types.CallbackQuery, state: FSMContext):
-        logger.debug(f"User {callback.from_user.id} adding post channel")
+        logger.info(f"User {callback.from_user.id} adding post channel")
         try:
             await state.set_state(BotStates.SET_POST_CHANNEL)
             await callback.message.edit_text(
@@ -98,7 +98,7 @@ def register_handlers(dp: Dispatcher, db: Database, shortener: Shortener):
     @dp.message(StateFilter(BotStates.SET_POST_CHANNEL))
     async def process_post_channel(message: types.Message, state: FSMContext):
         user_id = message.from_user.id
-        logger.debug(f"User {user_id} processing post channel")
+        logger.info(f"User {user_id} processing post channel")
         try:
             if not message.forward_from_chat or message.forward_from_chat.type != "channel":
                 await message.reply("Please forward a message from a channel. 🔄")
@@ -128,7 +128,7 @@ def register_handlers(dp: Dispatcher, db: Database, shortener: Shortener):
 
     @dp.callback_query(lambda c: c.data == "add_database_channel")
     async def add_database_channel(callback: types.CallbackQuery, state: FSMContext):
-        logger.debug(f"User {callback.from_user.id} adding database channel")
+        logger.info(f"User {callback.from_user.id} adding database channel")
         try:
             await state.set_state(BotStates.SET_DATABASE_CHANNEL)
             await callback.message.edit_text(
@@ -142,7 +142,7 @@ def register_handlers(dp: Dispatcher, db: Database, shortener: Shortener):
     @dp.message(StateFilter(BotStates.SET_DATABASE_CHANNEL))
     async def process_database_channel(message: types.Message, state: FSMContext):
         user_id = message.from_user.id
-        logger.debug(f"User {user_id} processing database channel")
+        logger.info(f"User {user_id} processing database channel")
         try:
             if not message.forward_from_chat or message.forward_from_chat.type != "channel":
                 await message.reply("Please forward a message from a channel. 🔄")
@@ -176,7 +176,7 @@ def register_handlers(dp: Dispatcher, db: Database, shortener: Shortener):
         chat_type = message.chat.type
         grp_id = user_id if chat_type == "private" else message.chat.id
         title = "PM" if chat_type == "private" else message.chat.title
-        logger.debug(f"User {user_id} setting shortlink for chat {grp_id}")
+        logger.info(f"User {user_id} setting shortlink for chat {grp_id}")
 
         try:
             if chat_type != "private":
@@ -206,7 +206,7 @@ def register_handlers(dp: Dispatcher, db: Database, shortener: Shortener):
     async def handle_media(message: types.Message):
         user_id = message.from_user.id
         chat_id = message.chat.id
-        logger.debug(f"User {user_id} sent media in chat {chat_id}")
+        logger.info(f"User {user_id} sent media in chat {chat_id}")
 
         try:
             database_channels = await db.get_channels(user_id, "database")
@@ -215,7 +215,7 @@ def register_handlers(dp: Dispatcher, db: Database, shortener: Shortener):
                 await message.reply("No database channels set! Please add one via 'Add Database Channel'. 🚫")
                 return
             if chat_id not in database_channels:
-                logger.debug(f"Chat {chat_id} is not a database channel for user {user_id}")
+                logger.info(f"Chat {chat_id} is not a database channel for user {user_id}")
                 return
 
             # Verify bot is admin in database channel
@@ -261,13 +261,14 @@ def register_handlers(dp: Dispatcher, db: Database, shortener: Shortener):
 
     async def post_media_with_delay(bot, user_id, file_name, raw_link, chat_id):
         try:
+            logger.info(f"Scheduling delayed post for media {file_name} for user {user_id}")
             await asyncio.sleep(20)  # Delay to ensure file is processed
             await post_media(bot, user_id, file_name, raw_link, chat_id)
         except Exception as e:
             logger.error(f"Error in delayed post_media for user {user_id}: {e}")
 
     async def post_media(bot, user_id, file_name, raw_link, chat_id):
-        logger.debug(f"Posting media {file_name} for user {user_id} from chat {chat_id}")
+        logger.info(f"Posting media {file_name} for user {user_id} from chat {chat_id}")
         try:
             shortener_settings = await db.get_shortener(chat_id)
             if not shortener_settings:
@@ -310,7 +311,7 @@ def register_handlers(dp: Dispatcher, db: Database, shortener: Shortener):
             logger.error(f"Error posting media for user {user_id}: {e}")
 
     async def fetch_poster(file_name):
-        logger.debug(f"Fetching poster for file {file_name}")
+        logger.info(f"Fetching poster for file {file_name}")
         try:
             return None  # Implement Cinemagoer logic
         except Exception as e:
@@ -320,7 +321,7 @@ def register_handlers(dp: Dispatcher, db: Database, shortener: Shortener):
     @dp.callback_query(lambda c: c.data == "total_files")
     async def show_total_files(callback: types.CallbackQuery):
         user_id = callback.from_user.id
-        logger.debug(f"User {user_id} checking total files")
+        logger.info(f"User {user_id} checking total files")
         try:
             media_files = await db.get_user_media(user_id)
             new_text = f"Total files: {len(media_files)} 📊"
@@ -338,7 +339,7 @@ def register_handlers(dp: Dispatcher, db: Database, shortener: Shortener):
     @dp.message(Command("broadcast"))
     async def broadcast_command(message: types.Message):
         user_id = message.from_user.id
-        logger.debug(f"User {user_id} attempting broadcast")
+        logger.info(f"User {user_id} attempting broadcast")
         try:
             if user_id not in ADMINS:
                 logger.warning(f"User {user_id} not authorized for broadcast")
@@ -351,7 +352,7 @@ def register_handlers(dp: Dispatcher, db: Database, shortener: Shortener):
     @dp.message(Command("stats"))
     async def stats_command(message: types.Message):
         user_id = message.from_user.id
-        logger.debug(f"User {user_id} requesting stats")
+        logger.info(f"User {user_id} requesting stats")
         try:
             if user_id not in ADMINS:
                 logger.warning(f"User {user_id} not authorized for stats")
@@ -366,7 +367,7 @@ def register_handlers(dp: Dispatcher, db: Database, shortener: Shortener):
 
     @dp.callback_query(lambda c: c.data == "set_shortener")
     async def set_shortener(callback: types.CallbackQuery, state: FSMContext):
-        logger.debug(f"User {callback.from_user.id} setting shortener")
+        logger.info(f"User {callback.from_user.id} setting shortener")
         try:
             await state.set_state(BotStates.SET_SHORTENER)
             await callback.message.edit_text(
@@ -380,7 +381,7 @@ def register_handlers(dp: Dispatcher, db: Database, shortener: Shortener):
     @dp.message(StateFilter(BotStates.SET_SHORTENER))
     async def process_shortener(message: types.Message, state: FSMContext):
         user_id = message.from_user.id
-        logger.debug(f"User {user_id} processing shortener")
+        logger.info(f"User {user_id} processing shortener")
         try:
             _, shortlink_url, api = message.text.split(" ")
             await db.save_shortener(user_id, shortlink_url, api)
@@ -403,7 +404,7 @@ def register_handlers(dp: Dispatcher, db: Database, shortener: Shortener):
     @dp.callback_query(lambda c: c.data == "see_shortener")
     async def see_shortener(callback: types.CallbackQuery):
         user_id = callback.from_user.id
-        logger.debug(f"User {user_id} viewing shortener")
+        logger.info(f"User {user_id} viewing shortener")
         try:
             shortener = await db.get_shortener(user_id)
             new_markup = get_main_menu()
@@ -423,7 +424,7 @@ def register_handlers(dp: Dispatcher, db: Database, shortener: Shortener):
 
     @dp.callback_query(lambda c: c.data == "set_backup_link")
     async def set_backup_link(callback: types.CallbackQuery, state: FSMContext):
-        logger.debug(f"User {callback.from_user.id} setting backup link")
+        logger.info(f"User {callback.from_user.id} setting backup link")
         try:
             await state.set_state(BotStates.SET_BACKUP_LINK)
             await callback.message.edit_text(
@@ -437,7 +438,7 @@ def register_handlers(dp: Dispatcher, db: Database, shortener: Shortener):
     @dp.message(StateFilter(BotStates.SET_BACKUP_LINK))
     async def process_backup_link(message: types.Message, state: FSMContext):
         user_id = message.from_user.id
-        logger.debug(f"User {user_id} processing backup link")
+        logger.info(f"User {user_id} processing backup link")
         try:
             backup_link = message.text.strip()
             if not backup_link.startswith("http"):
@@ -455,7 +456,7 @@ def register_handlers(dp: Dispatcher, db: Database, shortener: Shortener):
 
     @dp.callback_query(lambda c: c.data == "set_how_to_download")
     async def set_how_to_download(callback: types.CallbackQuery, state: FSMContext):
-        logger.debug(f"User {callback.from_user.id} setting how to download")
+        logger.info(f"User {callback.from_user.id} setting how to download")
         try:
             await state.set_state(BotStates.SET_HOW_TO_DOWNLOAD)
             await callback.message.edit_text(
@@ -469,7 +470,7 @@ def register_handlers(dp: Dispatcher, db: Database, shortener: Shortener):
     @dp.message(StateFilter(BotStates.SET_HOW_TO_DOWNLOAD))
     async def process_how_to_download(message: types.Message, state: FSMContext):
         user_id = message.from_user.id
-        logger.debug(f"User {user_id} processing how to download")
+        logger.info(f"User {user_id} processing how to download")
         try:
             how_to_download = message.text.strip()
             if not how_to_download.startswith("http"):
@@ -488,7 +489,7 @@ def register_handlers(dp: Dispatcher, db: Database, shortener: Shortener):
     @dp.callback_query(lambda c: c.data == "add_clone")
     async def add_clone(callback: types.CallbackQuery, state: FSMContext):
         user_id = callback.from_user.id
-        logger.debug(f"User {user_id} adding clone bot")
+        logger.info(f"User {user_id} adding clone bot")
         try:
             existing_clone = await db.get_clone_bot(user_id)
             if existing_clone:
@@ -511,7 +512,7 @@ def register_handlers(dp: Dispatcher, db: Database, shortener: Shortener):
     @dp.message(StateFilter(BotStates.SET_CLONE_TOKEN))
     async def process_clone_token(message: types.Message, state: FSMContext):
         user_id = message.from_user.id
-        logger.debug(f"User {user_id} processing clone bot token")
+        logger.info(f"User {user_id} processing clone bot token")
         try:
             token = message.text.strip()
             if not token.count(":") == 1 or len(token) < 35:
@@ -531,7 +532,7 @@ def register_handlers(dp: Dispatcher, db: Database, shortener: Shortener):
     @dp.callback_query(lambda c: c.data == "my_clones")
     async def show_my_clones(callback: types.CallbackQuery):
         user_id = callback.from_user.id
-        logger.debug(f"User {user_id} viewing clone bots")
+        logger.info(f"User {user_id} viewing clone bots")
         try:
             clone_bot = await db.get_clone_bot(user_id)
             new_markup = get_main_menu()

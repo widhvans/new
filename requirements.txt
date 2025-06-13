@@ -1,4 +1,4 @@
-aiogram==2.25.1
+aiogram==2.25.2  # Or latest compatible version
 motor==3.1.1
-aiohttp==3.8.6  # Updated to a version that supports Python 3.12
+aiohttp==3.9.5
 python-dotenv==1.0.0

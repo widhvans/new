@@ -23,10 +23,13 @@ class BotStates(StatesGroup):
     SET_FSUB = State()
     BROADCAST = State()
     SEARCH = State()
+    TOGGLE_SHORTENER = State()
 
 class MediaFilter(BaseFilter):
     async def __call__(self, message: types.Message) -> bool:
-        return message.content_type in [types.ContentType.PHOTO, types.ContentType.VIDEO, types.ContentType.DOCUMENT]
+        content_type = message.content_type
+        logger.info(f"Received message with content_type: {content_type} from user {message.from_user.id} in chat {message.chat.id}")
+        return content_type in [types.ContentType.PHOTO, types.ContentType.VIDEO, types.ContentType.DOCUMENT]
 
 async def check_subscription(bot: Bot, user_id: int, channel_id: int):
     try:
@@ -53,18 +56,22 @@ def register_handlers(dp: Dispatcher, db: Database, shortener: Shortener, bot: B
         settings = await db.get_settings(user_id)
         fsub_channel_id = settings.get("fsub_channel_id", None)
         if not await check_subscription(bot, user_id, fsub_channel_id):
-            channel = await bot.get_chat(fsub_channel_id)
-            invite_link = await channel.export_invite_link()
-            keyboard = InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text="Join Channel 📢", url=invite_link)],
-                [InlineKeyboardButton(text="Check Subscription ✅", callback_data="check_subscription")]
-            ])
-            await message.reply(
-                f"Please join our channel to use the bot! 😊\nAfter joining, click 'Check Subscription'.",
-                reply_markup=keyboard,
-                parse_mode="HTML"
-            )
-            logger.info(f"User {user_id} prompted to join FSub channel {fsub_channel_id}")
+            try:
+                channel = await bot.get_chat(fsub_channel_id)
+                invite_link = await channel.export_invite_link()
+                keyboard = InlineKeyboardMarkup(inline_keyboard=[
+                    [InlineKeyboardButton(text="Join Channel 📢", url=invite_link)],
+                    [InlineKeyboardButton(text="Check Subscription ✅", callback_data="check_subscription")]
+                ])
+                await message.reply(
+                    f"Please join our channel to use the bot! 😊\nAfter joining, click 'Check Subscription'.",
+                    reply_markup=keyboard,
+                    parse_mode="HTML"
+                )
+                logger.info(f"User {user_id} prompted to join FSub channel {fsub_channel_id}")
+            except Exception as e:
+                logger.error(f"Error generating invite link for FSub channel {fsub_channel_id}: {e}")
+                await message.reply("Failed to check subscription. Please try again later. 😕")
             return
         welcome_msg = (
             f"Welcome to {BOT_USERNAME}! 📦\n\n"
@@ -104,7 +111,8 @@ def register_handlers(dp: Dispatcher, db: Database, shortener: Shortener, bot: B
             keyboard = InlineKeyboardMarkup(inline_keyboard=[
                 [InlineKeyboardButton(text="Let's Begin! ▶️", callback_data="main_menu")]
             ])
-            await callback.message.edit_text(welcome_msg, reply_markup=keyboard, parse_mode="HTML")
+            if callback.message.text != welcome_msg or callback.message.reply_markup != keyboard:
+                await callback.message.edit_text(welcome_msg, reply_markup=keyboard, parse_mode="HTML")
             logger.info(f"User {user_id} passed subscription check")
         else:
             await callback.answer("You haven’t joined the channel yet! Please join and try again.", show_alert=True)
@@ -133,17 +141,19 @@ def register_handlers(dp: Dispatcher, db: Database, shortener: Shortener, bot: B
         try:
             channels = await db.get_channels(user_id, "post")
             if len(channels) >= 5:
-                await callback.message.edit_text("Max 5 post channels allowed! 🚫", reply_markup=await channel_manager.get_main_menu(user_id))
+                new_text = "Max 5 post channels allowed! 🚫"
+                if callback.message.text != new_text:
+                    await callback.message.edit_text(new_text, reply_markup=await channel_manager.get_main_menu(user_id))
                 logger.warning(f"User {user_id} exceeded post channel limit")
                 await callback.answer()
                 return
             await state.set_state(BotStates.SET_POST_CHANNEL)
-            await callback.message.edit_text(
-                "Make me an admin in your post channel (public or private), then send the channel ID (e.g., -100123456789). 📢",
-                reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                    [InlineKeyboardButton(text="Cancel ❌", callback_data="cancel_add_channel")]
-                ])
-            )
+            new_text = "Make me an admin in your post channel (public or private), then send the channel ID (e.g., -100123456789). 📢"
+            new_markup = InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="Cancel ❌", callback_data="cancel_add_channel")]
+            ])
+            if callback.message.text != new_text or callback.message.reply_markup != new_markup:
+                await callback.message.edit_text(new_text, reply_markup=new_markup)
             logger.info(f"Prompted user {user_id} to add post channel")
             await callback.answer()
         except Exception as e:
@@ -158,17 +168,19 @@ def register_handlers(dp: Dispatcher, db: Database, shortener: Shortener, bot: B
         try:
             channels = await db.get_channels(user_id, "database")
             if len(channels) >= 5:
-                await callback.message.edit_text("Max 5 database channels allowed! 🚫", reply_markup=await channel_manager.get_main_menu(user_id))
+                new_text = "Max 5 database channels allowed! 🚫"
+                if callback.message.text != new_text:
+                    await callback.message.edit_text(new_text, reply_markup=await channel_manager.get_main_menu(user_id))
                 logger.warning(f"User {user_id} exceeded database channel limit")
                 await callback.answer()
                 return
             await state.set_state(BotStates.SET_DATABASE_CHANNEL)
-            await callback.message.edit_text(
-                "Make me an admin in your database channel (public or private), then send the channel ID (e.g., -100123456789). 🗄️",
-                reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                    [InlineKeyboardButton(text="Cancel ❌", callback_data="cancel_add_channel")]
-                ])
-            )
+            new_text = "Make me an admin in your database channel (public or private), then send the channel ID (e.g., -100123456789). 🗄️"
+            new_markup = InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="Cancel ❌", callback_data="cancel_add_channel")]
+            ])
+            if callback.message.text != new_text or callback.message.reply_markup != new_markup:
+                await callback.message.edit_text(new_text, reply_markup=new_markup)
             logger.info(f"Prompted user {user_id} to add database channel")
             await callback.answer()
         except Exception as e:
@@ -182,7 +194,10 @@ def register_handlers(dp: Dispatcher, db: Database, shortener: Shortener, bot: B
         logger.info(f"User {user_id} canceled channel addition")
         try:
             await state.clear()
-            await callback.message.edit_text("Channel addition canceled. Returning to main menu... 😕", reply_markup=await channel_manager.get_main_menu(user_id))
+            new_text = "Channel addition canceled. Returning to main menu... 😕"
+            new_markup = await channel_manager.get_main_menu(user_id)
+            if callback.message.text != new_text or callback.message.reply_markup != new_markup:
+                await callback.message.edit_text(new_text, reply_markup=new_markup)
             logger.info(f"Canceled channel addition for user {user_id}")
             await callback.answer()
         except Exception as e:
@@ -280,7 +295,9 @@ def register_handlers(dp: Dispatcher, db: Database, shortener: Shortener, bot: B
             channel_id = int(callback.data.split("_")[2])
             channels = await db.get_channels(user_id, "post")
             if channel_id not in channels:
-                await callback.message.edit_text("Channel not found! 🚫", reply_markup=await channel_manager.get_main_menu(user_id))
+                new_text = "Channel not found! 🚫"
+                if callback.message.text != new_text:
+                    await callback.message.edit_text(new_text, reply_markup=await channel_manager.get_main_menu(user_id))
                 logger.warning(f"Post channel {channel_id} not found for user {user_id}")
                 await callback.answer()
                 return
@@ -290,7 +307,9 @@ def register_handlers(dp: Dispatcher, db: Database, shortener: Shortener, bot: B
             )
             channel = await bot.get_chat(channel_id)
             channel_name = channel.title or "Unnamed Channel"
-            await callback.message.edit_text(f"Post channel {channel_name} deleted! ✅", reply_markup=await channel_manager.get_main_menu(user_id))
+            new_text = f"Post channel {channel_name} deleted! ✅"
+            if callback.message.text != new_text:
+                await callback.message.edit_text(new_text, reply_markup=await channel_manager.get_main_menu(user_id))
             logger.info(f"Deleted post channel {channel_id} for user {user_id}")
             await callback.answer()
         except Exception as e:
@@ -305,7 +324,9 @@ def register_handlers(dp: Dispatcher, db: Database, shortener: Shortener, bot: B
             channel_id = int(callback.data.split("_")[2])
             channels = await db.get_channels(user_id, "database")
             if channel_id not in channels:
-                await callback.message.edit_text("Channel not found! 🚫", reply_markup=await channel_manager.get_main_menu(user_id))
+                new_text = "Channel not found! 🚫"
+                if callback.message.text != new_text:
+                    await callback.message.edit_text(new_text, reply_markup=await channel_manager.get_main_menu(user_id))
                 logger.warning(f"Database channel {channel_id} not found for user {user_id}")
                 await callback.answer()
                 return
@@ -315,7 +336,9 @@ def register_handlers(dp: Dispatcher, db: Database, shortener: Shortener, bot: B
             )
             channel = await bot.get_chat(channel_id)
             channel_name = channel.title or "Unnamed Channel"
-            await callback.message.edit_text(f"Database channel {channel_name} deleted! ✅", reply_markup=await channel_manager.get_main_menu(user_id))
+            new_text = f"Database channel {channel_name} deleted! ✅"
+            if callback.message.text != new_text:
+                await callback.message.edit_text(new_text, reply_markup=await channel_manager.get_main_menu(user_id))
             logger.info(f"Deleted database channel {channel_id} for user {user_id}")
             await callback.answer()
         except Exception as e:
@@ -433,18 +456,62 @@ def register_handlers(dp: Dispatcher, db: Database, shortener: Shortener, bot: B
         logger.info(f"User {user_id} requesting stats")
         await admin_manager.stats(bot, user_id, message)
 
+    @dp.callback_query(lambda c: c.data == "shortener_settings")
+    async def shortener_settings(callback: types.CallbackQuery):
+        user_id = callback.from_user.id
+        logger.info(f"User {user_id} accessing shortener settings")
+        try:
+            settings = await db.get_settings(user_id)
+            shortener_enabled = settings.get("enable_shortlink", True)
+            keyboard = InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text=f"Shortener {'On' if shortener_enabled else 'Off'} {'✅' if shortener_enabled else '❌'}", callback_data="toggle_shortener")],
+                [InlineKeyboardButton(text="Change Shortener 🔗", callback_data="set_shortener")],
+                [InlineKeyboardButton(text="⬅️ Back", callback_data="main_menu")]
+            ])
+            new_text = f"Shortener Settings: {'Enabled' if shortener_enabled else 'Disabled'}\nChoose an option:"
+            if callback.message.text != new_text or callback.message.reply_markup != keyboard:
+                await callback.message.edit_text(new_text, reply_markup=keyboard, parse_mode="HTML")
+            await callback.answer()
+            logger.info(f"Displayed shortener settings for user {user_id}")
+        except Exception as e:
+            logger.error(f"Error showing shortener settings for user {user_id}: {e}")
+            await callback.message.reply("Failed to show shortener settings. Try again. 😕", reply_markup=await channel_manager.get_main_menu(user_id))
+
+    @dp.callback_query(lambda c: c.data == "toggle_shortener")
+    async def toggle_shortener(callback: types.CallbackQuery, state: FSMContext):
+        user_id = callback.from_user.id
+        logger.info(f"User {user_id} toggling shortener")
+        try:
+            settings = await db.get_settings(user_id)
+            current_state = settings.get("enable_shortlink", True)
+            new_state = not current_state
+            await db.save_group_settings(user_id, "enable_shortlink", new_state)
+            keyboard = InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text=f"Shortener {'On' if new_state else 'Off'} {'✅' if new_state else '❌'}", callback_data="toggle_shortener")],
+                [InlineKeyboardButton(text="Change Shortener 🔗", callback_data="set_shortener")],
+                [InlineKeyboardButton(text="⬅️ Back", callback_data="main_menu")]
+            ])
+            new_text = f"Shortener {'Enabled' if new_state else 'Disabled'}! ✅\nChoose an option:"
+            if callback.message.text != new_text or callback.message.reply_markup != keyboard:
+                await callback.message.edit_text(new_text, reply_markup=keyboard, parse_mode="HTML")
+            await callback.answer()
+            logger.info(f"Toggled shortener to {'enabled' if new_state else 'disabled'} for user {user_id}")
+        except Exception as e:
+            logger.error(f"Error toggling shortener for user {user_id}: {e}")
+            await callback.message.reply("Failed to toggle shortener. Try again. 😕", reply_markup=await channel_manager.get_main_menu(user_id))
+
     @dp.callback_query(lambda c: c.data == "set_shortener")
     async def set_shortener(callback: types.CallbackQuery, state: FSMContext):
         user_id = callback.from_user.id
         logger.info(f"User {user_id} setting shortener")
         try:
             await state.set_state(BotStates.SET_SHORTENER)
-            await callback.message.edit_text(
-                "Send the shortener details in format: <code>shortlink mdisk.link your_api_key</code> 🔗",
-                reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                    [InlineKeyboardButton(text="Cancel ❌", callback_data="cancel_shortener")]
-                ])
-            )
+            new_text = "Send the shortener details in format: <code>shortlink mdisk.link your_api_key</code> 🔗"
+            new_markup = InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="Cancel ❌", callback_data="cancel_shortener")]
+            ])
+            if callback.message.text != new_text or callback.message.reply_markup != new_markup:
+                await callback.message.edit_text(new_text, reply_markup=new_markup, parse_mode="HTML")
             await callback.answer()
             logger.info(f"Prompted user {user_id} to set shortener")
         except Exception as e:
@@ -457,7 +524,10 @@ def register_handlers(dp: Dispatcher, db: Database, shortener: Shortener, bot: B
         logger.info(f"User {user_id} canceled shortener setup")
         try:
             await state.clear()
-            await callback.message.edit_text("Shortener setup canceled. Returning to main menu... 😕", reply_markup=await channel_manager.get_main_menu(user_id))
+            new_text = "Shortener setup canceled. Returning to main menu... 😕"
+            new_markup = await channel_manager.get_main_menu(user_id)
+            if callback.message.text != new_text or callback.message.reply_markup != new_markup:
+                await callback.message.edit_text(new_text, reply_markup=new_markup)
             logger.info(f"Canceled shortener setup for user {user_id}")
             await callback.answer()
         except Exception as e:
@@ -518,12 +588,12 @@ def register_handlers(dp: Dispatcher, db: Database, shortener: Shortener, bot: B
         logger.info(f"User {user_id} setting backup link")
         try:
             await state.set_state(BotStates.SET_BACKUP_LINK)
-            await callback.message.edit_text(
-                "Please send the backup link URL. 🔄",
-                reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                    [InlineKeyboardButton(text="Cancel ❌", callback_data="cancel_backup_link")]
-                ])
-            )
+            new_text = "Please send the backup link URL. 🔄"
+            new_markup = InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="Cancel ❌", callback_data="cancel_backup_link")]
+            ])
+            if callback.message.text != new_text or callback.message.reply_markup != new_markup:
+                await callback.message.edit_text(new_text, reply_markup=new_markup)
             await callback.answer()
             logger.info(f"Prompted user {user_id} to set backup link")
         except Exception as e:
@@ -536,7 +606,10 @@ def register_handlers(dp: Dispatcher, db: Database, shortener: Shortener, bot: B
         logger.info(f"User {user_id} canceled backup link setup")
         try:
             await state.clear()
-            await callback.message.edit_text("Backup link setup canceled. Returning to main menu... 😕", reply_markup=await channel_manager.get_main_menu(user_id))
+            new_text = "Backup link setup canceled. Returning to main menu... 😕"
+            new_markup = await channel_manager.get_main_menu(user_id)
+            if callback.message.text != new_text or callback.message.reply_markup != new_markup:
+                await callback.message.edit_text(new_text, reply_markup=new_markup)
             logger.info(f"Canceled backup link setup for user {user_id}")
             await callback.answer()
         except Exception as e:
@@ -568,12 +641,12 @@ def register_handlers(dp: Dispatcher, db: Database, shortener: Shortener, bot: B
         logger.info(f"User {user_id} setting how to download")
         try:
             await state.set_state(BotStates.SET_HOW_TO_DOWNLOAD)
-            await callback.message.edit_text(
-                "Please send the 'How to Download' tutorial URL. 📖",
-                reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                    [InlineKeyboardButton(text="Cancel ❌", callback_data="cancel_how_to_download")]
-                ])
-            )
+            new_text = "Please send the 'How to Download' tutorial URL. 📖"
+            new_markup = InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="Cancel ❌", callback_data="cancel_how_to_download")]
+            ])
+            if callback.message.text != new_text or callback.message.reply_markup != new_markup:
+                await callback.message.edit_text(new_text, reply_markup=new_markup)
             await callback.answer()
             logger.info(f"Prompted user {user_id} to set how to download")
         except Exception as e:
@@ -586,7 +659,10 @@ def register_handlers(dp: Dispatcher, db: Database, shortener: Shortener, bot: B
         logger.info(f"User {user_id} canceled how to download setup")
         try:
             await state.clear()
-            await callback.message.edit_text("How to Download setup canceled. Returning to main menu... 😕", reply_markup=await channel_manager.get_main_menu(user_id))
+            new_text = "How to Download setup canceled. Returning to main menu... 😕"
+            new_markup = await channel_manager.get_main_menu(user_id)
+            if callback.message.text != new_text or callback.message.reply_markup != new_markup:
+                await callback.message.edit_text(new_text, reply_markup=new_markup)
             logger.info(f"Canceled how to download setup for user {user_id}")
             await callback.answer()
         except Exception as e:
@@ -631,12 +707,12 @@ def register_handlers(dp: Dispatcher, db: Database, shortener: Shortener, bot: B
                 logger.info(f"User {user_id} already has a clone bot")
                 return
             await state.set_state(BotStates.SET_CLONE_TOKEN)
-            await callback.message.edit_text(
-                "Send the bot token for your search bot. 🤖\nObtain a token via @BotFather.",
-                reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                    [InlineKeyboardButton(text="Cancel ❌", callback_data="cancel_clone")]
-                ])
-            )
+            new_text = "Send the bot token for your search bot. 🤖\nObtain a token via @BotFather."
+            new_markup = InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="Cancel ❌", callback_data="cancel_clone")]
+            ])
+            if callback.message.text != new_text or callback.message.reply_markup != new_markup:
+                await callback.message.edit_text(new_text, reply_markup=new_markup)
             await callback.answer()
             logger.info(f"Prompted user {user_id} to add clone bot token")
         except Exception as e:
@@ -649,7 +725,10 @@ def register_handlers(dp: Dispatcher, db: Database, shortener: Shortener, bot: B
         logger.info(f"User {user_id} canceled clone bot setup")
         try:
             await state.clear()
-            await callback.message.edit_text("Search bot setup canceled. Returning to main menu... 😕", reply_markup=await channel_manager.get_main_menu(user_id))
+            new_text = "Search bot setup canceled. Returning to main menu... 😕"
+            new_markup = await channel_manager.get_main_menu(user_id)
+            if callback.message.text != new_text or callback.message.reply_markup != new_markup:
+                await callback.message.edit_text(new_text, reply_markup=new_markup)
             logger.info(f"Canceled clone bot setup for user {user_id}")
             await callback.answer()
         except Exception as e:
@@ -687,13 +766,17 @@ def register_handlers(dp: Dispatcher, db: Database, shortener: Shortener, bot: B
         try:
             clone_bot = await db.get_clone_bot(user_id)
             if not clone_bot:
-                await callback.message.edit_text("No search bot found! 🚫", reply_markup=await channel_manager.get_main_menu(user_id))
+                new_text = "No search bot found! 🚫"
+                if callback.message.text != new_text:
+                    await callback.message.edit_text(new_text, reply_markup=await channel_manager.get_main_menu(user_id))
                 logger.warning(f"No clone bot found for user {user_id}")
                 await callback.answer()
                 return
             username = clone_bot.get('username', 'Unknown')
             await db.delete_clone_bot(user_id)
-            await callback.message.edit_text(f"Search bot {username} deleted successfully! ✅", reply_markup=await channel_manager.get_main_menu(user_id))
+            new_text = f"Search bot {username} deleted successfully! ✅"
+            if callback.message.text != new_text:
+                await callback.message.edit_text(new_text, reply_markup=await channel_manager.get_main_menu(user_id))
             logger.info(f"Deleted clone bot {username} for user {user_id}")
             await callback.answer()
         except Exception as e:
@@ -714,12 +797,12 @@ def register_handlers(dp: Dispatcher, db: Database, shortener: Shortener, bot: B
                 await callback.answer()
                 return
             await state.set_state(BotStates.SEARCH)
-            await callback.message.edit_text(
-                "Send the file name to search for. 🔍",
-                reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                    [InlineKeyboardButton(text="Cancel ❌", callback_data="cancel_search")]
-                ])
-            )
+            new_text = "Send the file name to search for. 🔍"
+            new_markup = InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="Cancel ❌", callback_data="cancel_search")]
+            ])
+            if callback.message.text != new_text or callback.message.reply_markup != new_markup:
+                await callback.message.edit_text(new_text, reply_markup=new_markup)
             await callback.answer()
             logger.info(f"Prompted user {user_id} for clone search query")
         except Exception as e:
@@ -731,7 +814,9 @@ def register_handlers(dp: Dispatcher, db: Database, shortener: Shortener, bot: B
         user_id = callback.from_user.id
         logger.info(f"User {user_id} canceled search")
         await state.clear()
-        await callback.message.edit_text("Search canceled. 😕", reply_markup=await channel_manager.get_main_menu(user_id))
+        new_text = "Search canceled. 😕"
+        if callback.message.text != new_text:
+            await callback.message.edit_text(new_text, reply_markup=await channel_manager.get_main_menu(user_id))
         await callback.answer()
 
     @dp.message(StateFilter(BotStates.SEARCH))
@@ -767,22 +852,13 @@ def register_handlers(dp: Dispatcher, db: Database, shortener: Shortener, bot: B
         user_id = callback.from_user.id
         logger.info(f"User {user_id} setting force subscribe")
         try:
-            if user_id not in ADMIN_IDS:
-                new_text = "Only admins can set Force Subscribe! 🚫"
-                if callback.message.text != new_text:
-                    await callback.message.edit_text(new_text, reply_markup=await channel_manager.get_main_menu(user_id))
-                await callback.answer()
-                logger.warning(f"Unauthorized FSub attempt by user {user_id}")
-                return
             await state.set_state(BotStates.SET_FSUB)
             new_text = "Send the channel ID (e.g., -100123456789) for Force Subscribe. Make me an admin in the channel. 📢\nSend 'disable' to turn off FSub."
-            if callback.message.text != new_text:
-                await callback.message.edit_text(
-                    new_text,
-                    reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                        [InlineKeyboardButton(text="Cancel ❌", callback_data="cancel_fsub")]
-                    ])
-                )
+            new_markup = InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="Cancel ❌", callback_data="cancel_fsub")]
+            ])
+            if callback.message.text != new_text or callback.message.reply_markup != new_markup:
+                await callback.message.edit_text(new_text, reply_markup=new_markup)
             await callback.answer()
             logger.info(f"Prompted user {user_id} to set FSub channel")
         except Exception as e:
@@ -795,7 +871,10 @@ def register_handlers(dp: Dispatcher, db: Database, shortener: Shortener, bot: B
         logger.info(f"User {user_id} canceled FSub setup")
         try:
             await state.clear()
-            await callback.message.edit_text("FSub setup canceled. Returning to main menu... 😕", reply_markup=await channel_manager.get_main_menu(user_id))
+            new_text = "FSub setup canceled. Returning to main menu... 😕"
+            new_markup = await channel_manager.get_main_menu(user_id)
+            if callback.message.text != new_text or callback.message.reply_markup != new_markup:
+                await callback.message.edit_text(new_text, reply_markup=new_markup)
             logger.info(f"Canceled FSub setup for user {user_id}")
             await callback.answer()
         except Exception as e:

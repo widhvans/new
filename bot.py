@@ -5,7 +5,7 @@ import sys
 import psutil
 from aiogram import Bot, Dispatcher
 from aiogram.fsm.storage.memory import MemoryStorage
-from config import BOT_TOKEN, BOT_USERNAME, MONGO_URI, logger
+from config import BOT_TOKEN, MONGO_URI, logger
 from database import Database
 from shortener import Shortener
 from handlers import register_handlers
@@ -38,7 +38,7 @@ async def start_bot(token: str, db: Database):
                 break
             except Exception as e:
                 logger.warning(f"Failed to start bot @{bot_info.username}, attempt {attempt + 1}/3: {e}")
-                await asyncio.sleep(5 * (2 ** attempt))  # Exponential backoff
+                await asyncio.sleep(5 * (2 ** attempt))
         else:
             logger.error(f"Failed to start bot @{bot_info.username} after 3 attempts")
     except Exception as e:
@@ -48,9 +48,7 @@ async def main():
     check_single_instance()
     logger.info("Starting main bot...")
     db = Database()
-    # Start main bot
     main_task = start_bot(BOT_TOKEN, db)
-    # Start clone bots
     clone_bots = await db.get_all_clone_bots()
     logger.info(f"Found {len(clone_bots)} clone bots to start")
     clone_tasks = [start_bot(clone['token'], db) for clone in clone_bots if 'token' in clone]

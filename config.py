@@ -1,4 +1,12 @@
 import os
+import logging
+
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
 
 # Bot token for Telegram API authentication
 BOT_TOKEN = os.getenv("BOT_TOKEN", "7320891454:AAHp3AAIZK2RKIkWyYIByB_fSEq9Xuk9-bk")
@@ -24,8 +32,10 @@ BOT_USERNAME = "@Complete_jwshw_bot"
 # List of admin user IDs
 ADMIN_IDS = [1938030055]
 
-# Telegram API ID (optional, replace with your own if needed)
+# Telegram API ID
 API_ID = os.getenv("API_ID", "10389378")
 
-# Telegram API Hash (optional, replace with your own if needed)
+# Telegram API Hash
 API_HASH = os.getenv("API_HASH", "cdd5c820cb6abeecaef38e2bb8db4860")
+
+logger.info("Configuration loaded successfully")

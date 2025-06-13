@@ -2,10 +2,8 @@ from aiogram import Dispatcher, types
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
-from aiogram.filters import Command, StateFilter, ContentType
+from aiogram.filters import Command, StateFilter
 import asyncio
-from database import Database
-from shortener import Shortener
 import logging
 
 logger = logging.getLogger(__name__)
@@ -26,7 +24,7 @@ def get_main_menu():
     keyboard.add(InlineKeyboardButton("Set Backup Link", callback_data="set_backup_link"))
     keyboard.add(InlineKeyboardButton("Set How to Download", callback_data="set_how_to_download"))
     keyboard.add(InlineKeyboardButton("Total Files", callback_data="total_files"))
-    keyboard.add(InlineKeyboardButton("Clone Search Bot", callback_data="clone_search_bot"))
+    keyboard.add(InlineKeyboardButton("Clone Search", callback_data="clone_search"))
     return keyboard
 
 def register_handlers(dp: Dispatcher, db: Database, shortener: Shortener):
@@ -116,7 +114,7 @@ def register_handlers(dp: Dispatcher, db: Database, shortener: Shortener):
             f"<b>Successfully added shortlink API for {title}\n\nCurrent shortlink website: <code>{shortlink_url}</code>\nCurrent API: <code>{api}</code>.</b>"
         )
 
-    @dp.message(ContentType([types.ContentType.PHOTO, types.ContentType.VIDEO, types.ContentType.DOCUMENT]))
+    @dp.message(content_types=[types.ContentType.PHOTO, types.ContentType.VIDEO, types.ContentType.DOCUMENT])
     async def handle_media(message: types.Message):
         user_id = message.from_user.id
         database_channels = await db.get_channels(user_id, "database")
@@ -176,7 +174,7 @@ def register_handlers(dp: Dispatcher, db: Database, shortener: Shortener):
         media_files = await db.get_user_media(user_id)
         await callback.message.edit_text(f"Total files: {len(media_files)}", reply_markup=get_main_menu())
 
-    @dp.callback_query(lambda c: c.data == "clone_search_bot")
+    @dp.callback_query(lambda c: c.data == "clone_search")
     async def clone_search_bot(callback: types.CallbackQuery):
         await callback.message.edit_text(
             "Clone search bot activated! Search for files in PM or connected groups.",

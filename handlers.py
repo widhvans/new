@@ -209,6 +209,7 @@ def register_handlers(dp: Dispatcher, db: Database, shortener: Shortener):
         logger.info(f"User {user_id} sent media in chat {chat_id}")
 
         try:
+            # Fetch database channels
             database_channels = await db.get_channels(user_id, "database")
             if not database_channels:
                 logger.warning(f"No database channels configured for user {user_id}")
@@ -222,9 +223,10 @@ def register_handlers(dp: Dispatcher, db: Database, shortener: Shortener):
             bot_member = await message.bot.get_chat_member(chat_id, message.bot.id)
             if bot_member.status not in ["administrator", "creator"]:
                 logger.warning(f"Bot not admin in database channel {chat_id} for user {user_id}")
-                await message.reply("I must be an admin in this database channel to process media. 🚫")
+                await message.reply("I must be an admin in this database channel to process media. Please add me as an admin. 🚫")
                 return
 
+            # Extract media details
             file_id = None
             file_name = None
             media_type = None
@@ -244,24 +246,40 @@ def register_handlers(dp: Dispatcher, db: Database, shortener: Shortener):
                 media_type = "document"
                 file_name = message.document.file_name or f"doc_{message.message_id}"
                 file_size = message.document.file_size or "Unknown"
+            else:
+                logger.warning(f"Unsupported media type from user {user_id} in chat {chat_id}")
+                await message.reply("Unsupported media type. Please send a photo, video, or document. 😕")
+                return
 
             if file_id:
                 raw_link = f"telegram://file/{file_id}"
+                # Save media to database
                 await db.save_media(user_id, media_type, file_id, file_name, raw_link, file_size)
-                logger.info(f"Saved media {file_name} for user {user_id} in chat {chat_id}")
-                # Schedule posting after delay
+                logger.info(f"Indexed media {file_name} (type: {media_type}) for user {user_id} in chat {chat_id}")
+                # Check for required configurations
+                shortener_settings = await db.get_shortener(chat_id)
+                if not shortener_settings:
+                    logger.warning(f"No shortener settings for chat {chat_id}, user {user_id}")
+                    await message.reply("No shortener set! Please configure via 'Set Shortener'. Posting skipped. ⚠️")
+                    return
+                post_channels = await db.get_channels(user_id, "post")
+                if not post_channels:
+                    logger.warning(f"No post channels configured for user {user_id}")
+                    await message.reply("No post channels set! Please add one via 'Add Post Channel'. Posting skipped. ⚠️")
+                    return
+                # Schedule posting
                 asyncio.create_task(post_media_with_delay(dp.bot, user_id, file_name, raw_link, chat_id))
-                await message.reply("Media saved! Will post to your channels shortly. ✅")
+                await message.reply("Media indexed! Will post to your channels shortly. ✅")
             else:
                 logger.warning(f"No valid file ID found in media message from user {user_id}")
                 await message.reply("Invalid media file. Please try again. 😕")
         except Exception as e:
-            logger.error(f"Error handling media for user {user_id} in chat {chat_id}: {e}")
-            await message.reply("Failed to process media. Please try again. 😕")
+            logger.error(f"Error indexing media for user {user_id} in chat {chat_id}: {e}")
+            await message.reply("Failed to index media. Please try again or contact support. 😕")
 
     async def post_media_with_delay(bot, user_id, file_name, raw_link, chat_id):
         try:
-            logger.info(f"Scheduling delayed post for media {file_name} for user {user_id}")
+            logger.info(f"Scheduling delayed post for media {file_name} for user {user_id} in chat {chat_id}")
             await asyncio.sleep(20)  # Delay to ensure file is processed
             await post_media(bot, user_id, file_name, raw_link, chat_id)
         except Exception as e:
@@ -275,21 +293,25 @@ def register_handlers(dp: Dispatcher, db: Database, shortener: Shortener):
                 logger.warning(f"No shortener settings for chat {chat_id}, user {user_id}")
                 return
             short_link = await shortener.get_shortlink(raw_link, chat_id)
+            if not short_link:
+                logger.warning(f"Failed to generate shortlink for media {file_name}, user {user_id}")
+                return
             post_channels = await db.get_channels(user_id, "post")
             if not post_channels:
                 logger.warning(f"No post channels configured for user {user_id}")
                 return
 
-            backup_link = (await db.get_settings(user_id)).get("backup_link", "")
-            how_to_download = (await db.get_settings(user_id)).get("how_to_download", "")
+            settings = await db.get_settings(user_id)
+            backup_link = settings.get("backup_link", "")
+            how_to_download = settings.get("how_to_download", "")
             poster_url = await fetch_poster(file_name)
 
             keyboard = InlineKeyboardMarkup(inline_keyboard=[
                 [InlineKeyboardButton(text="Download 📥", url=short_link)]
             ])
-            if backup_link:
+            if backup_link and backup_link.startswith("http"):
                 keyboard.inline_keyboard.append([InlineKeyboardButton(text="Backup Link 🔄", url=backup_link)])
-            if how_to_download:
+            if how_to_download and how_to_download.startswith("http"):
                 keyboard.inline_keyboard.append([InlineKeyboardButton(text="How to Download ❓", url=how_to_download)])
 
             for channel_id in post_channels:

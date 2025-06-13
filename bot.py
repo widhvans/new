@@ -94,13 +94,12 @@ async def handle_callback(client, callback):
                 return
             await callback.message.edit(
                 f"1. Add me to the post channel and make me an admin.\n"
-                f"2. Send a message in the channel mentioning {BOT_USERNAME}.\n"
-                f"3. Send the channel ID (e.g., -100123456789) here.",
+                f"2. Send the channel's invite link (e.g., t.me/+abc123 or @ChannelName) here.",
                 reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Go Back", callback_data="main_menu")]])
             )
-            await save_user_settings(user_id, "input_state", "add_post_channel_manual")
-            await callback.answer("Follow the steps to add post channel.")
-            logger.info(f"Waiting for manual post channel ID from user {user_id}")
+            await save_user_settings(user_id, "input_state", "add_post_channel_link")
+            await callback.answer("Please send the channel invite link.")
+            logger.info(f"Waiting for post channel invite link from user {user_id}")
 
         elif data == "add_db_channel":
             settings = await get_user_settings(user_id)
@@ -112,13 +111,12 @@ async def handle_callback(client, callback):
                 return
             await callback.message.edit(
                 f"1. Add me to the database channel and make me an admin.\n"
-                f"2. Send a message in the channel mentioning {BOT_USERNAME}.\n"
-                f"3. Send the channel ID (e.g., -100123456789) here.",
+                f"2. Send the channel's invite link (e.g., t.me/+abc123 or @ChannelName) here.",
                 reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Go Back", callback_data="main_menu")]])
             )
-            await save_user_settings(user_id, "input_state", "add_db_channel_manual")
-            await callback.answer("Follow the steps to add database channel.")
-            logger.info(f"Waiting for manual database channel ID from user {user_id}")
+            await save_user_settings(user_id, "input_state", "add_db_channel_link")
+            await callback.answer("Please send the channel invite link.")
+            logger.info(f"Waiting for database channel invite link from user {user_id}")
 
         elif data == "set_shortener":
             await callback.message.edit(
@@ -152,13 +150,12 @@ async def handle_callback(client, callback):
         elif data == "set_fsub":
             await callback.message.edit(
                 f"1. Add me to the forced subscription channel.\n"
-                f"2. Send a message in the channel mentioning {BOT_USERNAME}.\n"
-                f"3. Send the channel ID (e.g., -100123456789) here.",
+                f"2. Send the channel's invite link (e.g., t.me/+abc123 or @ChannelName) here.",
                 reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Go Back", callback_data="main_menu")]])
             )
-            await save_user_settings(user_id, "input_state", "set_fsub_manual")
-            await callback.answer("Follow the steps to set fsub channel.")
-            logger.info(f"Waiting for manual fsub channel ID from user {user_id}")
+            await save_user_settings(user_id, "input_state", "set_fsub_link")
+            await callback.answer("Please send the channel invite link.")
+            logger.info(f"Waiting for fsub channel invite link from user {user_id}")
 
         elif data == "total_files":
             count = await media_collection.count_documents({"user_id": user_id})
@@ -220,42 +217,29 @@ async def handle_input(client, message):
         settings = await get_user_settings(user_id)
         input_state = settings.get("input_state")
         if input_state not in [
-            "add_post_channel_manual", "add_db_channel_manual", "set_shortener",
-            "set_backup_link", "set_fsub_manual", "clone_search", "set_howto"
+            "add_post_channel_link", "add_db_channel_link", "set_shortener",
+            "set_backup_link", "set_fsub_link", "clone_search", "set_howto"
         ]:
             logger.info(f"No input expected for user {user_id}")
             await message.reply("Please select an action from the menu.")
             return
 
-        if input_state in ["add_post_channel_manual", "add_db_channel_manual"]:
-            channel_type = "post_channels" if input_state == "add_post_channel_manual" else "db_channels"
-            channel_id = message.text.strip()
-            logger.info(f"Processing channel ID {channel_id} for {channel_type} by user {user_id}")
+        if input_state in ["add_post_channel_link", "add_db_channel_link"]:
+            channel_type = "post_channels" if input_state == "add_post_channel_link" else "db_channels"
+            invite_link = message.text.strip()
+            logger.info(f"Processing channel invite link {invite_link} for {channel_type} by user {user_id}")
             try:
-                # Attempt to fetch chat to verify access
-                chat = await client.get_chat(channel_id)
-                logger.info(f"Chat fetched: {chat.title} ({chat.id})")
-                # Check if bot is a member
-                try:
-                    member = await client.get_chat_member(channel_id, (await client.get_me()).id)
-                    if member.status not in [enums.ChatMemberStatus.MEMBER, enums.ChatMemberStatus.ADMINISTRATOR]:
-                        await message.reply(
-                            f"Please add me to the channel and mention {BOT_USERNAME} in a message there!"
-                        )
-                        logger.warning(f"Bot not a member in channel {channel_id} for user {user_id}")
-                        return
-                except Exception as e:
-                    await message.reply(
-                        f"I can't access the channel. Please mention {BOT_USERNAME} in a message in the channel first!"
-                    )
-                    logger.error(f"Error checking bot membership in channel {channel_id}: {e}")
-                    return
-                # Check admin status
+                # Join the channel using the invite link
+                chat = await client.join_chat(invite_link)
+                channel_id = str(chat.id)
+                logger.info(f"Joined channel: {chat.title} ({channel_id})")
+                # Check if bot is an admin
                 admins = await client.get_chat_members(channel_id, filter=enums.ChatMembersFilter.ADMINISTRATORS)
                 bot_id = (await client.get_me()).id
                 if not any(admin.user.id == bot_id for admin in admins):
+                    await client.leave_chat(channel_id)
                     await message.reply(
-                        "I'm not an admin in this channel! Please make me an admin."
+                        "I'm not an admin in this channel! Please make me an admin and try again."
                     )
                     logger.warning(f"Bot not admin in channel {channel_id} for user {user_id}")
                     return
@@ -269,16 +253,11 @@ async def handle_input(client, message):
                     await message.reply("Channel already connected!")
                     logger.info(f"Channel {channel_id} already connected for user {user_id}")
             except Exception as e:
-                if "PEER_ID_INVALID" in str(e):
-                    await message.reply(
-                        f"Invalid channel ID or I haven't interacted with this channel. Please send a message in the channel mentioning {BOT_USERNAME} first!"
-                    )
-                    logger.error(f"PEER_ID_INVALID for channel {channel_id} by user {user_id}")
-                    return
-                else:
-                    logger.error(f"Error processing channel {channel_id} for user {user_id}: {e}")
-                    await message.reply("Error accessing channel. Ensure the ID is correct and I'm a member!")
-                    return
+                await message.reply(
+                    "Invalid invite link or I couldn't join the channel. Ensure the link is correct and I'm not banned!"
+                )
+                logger.error(f"Error processing invite link {invite_link} for user {user_id}: {e}")
+                return
 
         elif input_state == "set_shortener":
             try:
@@ -298,39 +277,22 @@ async def handle_input(client, message):
             await message.reply("Backup link set successfully!")
             logger.info(f"Backup link set for user {user_id}: {backup_link}")
 
-        elif input_state == "set_fsub_manual":
-            channel_id = message.text.strip()
+        elif input_state == "set_fsub_link":
+            invite_link = message.text.strip()
+            logger.info(f"Processing fsub channel invite link {invite_link} by user {user_id}")
             try:
-                chat = await client.get_chat(channel_id)
-                logger.info(f"Chat fetched: {chat.title} ({chat.id})")
-                try:
-                    member = await client.get_chat_member(channel_id, (await client.get_me()).id)
-                    if member.status not in [enums.ChatMemberStatus.MEMBER, enums.ChatMemberStatus.ADMINISTRATOR]:
-                        await message.reply(
-                            f"Please add me to the channel and mention {BOT_USERNAME} in a message there!"
-                        )
-                        logger.warning(f"Bot not a member in fsub channel {channel_id} for user {user_id}")
-                        return
-                except Exception as e:
-                    await message.reply(
-                        f"I can't access the channel. Please mention {BOT_USERNAME} in a message in the channel first!"
-                    )
-                    logger.error(f"Error checking bot membership in fsub channel {channel_id}: {e}")
-                    return
+                chat = await client.join_chat(invite_link)
+                channel_id = str(chat.id)
+                logger.info(f"Joined fsub channel: {chat.title} ({channel_id})")
                 await save_user_settings(user_id, "fsub_channel", channel_id)
                 await message.reply(f"Forced subscription set to {chat.title}!")
                 logger.info(f"Fsub set to {channel_id} for user {user_id}")
             except Exception as e:
-                if "PEER_ID_INVALID" in str(e):
-                    await message.reply(
-                        f"Invalid channel ID or I haven't interacted with this channel. Please send a message in the channel mentioning {BOT_USERNAME} first!"
-                    )
-                    logger.error(f"PEER_ID_INVALID for fsub channel {channel_id} by user {user_id}")
-                    return
-                else:
-                    logger.error(f"Error processing fsub channel {channel_id} for user {user_id}: {e}")
-                    await message.reply("Error accessing channel. Ensure the ID is correct and I'm a member!")
-                    return
+                await message.reply(
+                    "Invalid invite link or I couldn't join the channel. Ensure the link is correct and I'm not banned!"
+                )
+                logger.error(f"Error processing fsub invite link {invite_link} for user {user_id}: {e}")
+                return
 
         elif input_state == "clone_search":
             query = message.text.strip().lower()

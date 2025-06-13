@@ -1,4 +1,4 @@
-from aiogram import Dispatcher, types
+from aiogram import Dispatcher, types, Bot
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
@@ -48,7 +48,7 @@ def get_main_menu():
     ])
     return keyboard
 
-async def check_admin_status(bot: types.Bot, channel_id: int, bot_id: int, retries=3, delay=2):
+async def check_admin_status(bot: Bot, channel_id: int, bot_id: int, retries=3, delay=2):
     for attempt in range(retries):
         try:
             bot_member = await bot.get_chat_member(channel_id, bot_id)
@@ -61,26 +61,25 @@ async def check_admin_status(bot: types.Bot, channel_id: int, bot_id: int, retri
         await asyncio.sleep(delay * (2 ** attempt))  # Exponential backoff
     return False
 
-async def get_user_channels(bot: types.Bot, user_id: int) -> list:
+async def get_user_channels(bot: Bot, user_id: int) -> list:
     channels = []
     try:
-        # Simulate fetching channels (replace with actual logic if available)
-        # For now, use known channels from database
-        post_channels = await db.get_channels(user_id, "post")
-        db_channels = await db.get_channels(user_id, "database")
+        # Fetch known channels from database
+        post_channels = await db_instance.get_channels(user_id, "post")
+        db_channels = await db_instance.get_channels(user_id, "database")
         channels.extend(post_channels)
         channels.extend(db_channels)
-        # Optionally, fetch recent chats (limited by Telegram API)
-        async for chat in bot.get_updates():
-            if chat.message and chat.message.chat.type == "channel":
-                channels.append(chat.message.chat.id)
+        # Fetch recent channel chats (limited by Telegram API)
+        async for update in bot.get_updates():
+            if update.message and update.message.chat.type == "channel":
+                channels.append(update.message.chat.id)
         channels = list(set(channels))  # Remove duplicates
         logger.info(f"Fetched {len(channels)} channels for user {user_id}")
     except Exception as e:
         logger.error(f"Error fetching channels for user {user_id}: {e}")
     return channels
 
-async def poll_admin_status(bot: types.Bot, user_id: int, channel_type: str, state: FSMContext, timeout=300):
+async def poll_admin_status(bot: Bot, user_id: int, channel_type: str, state: FSMContext, timeout=300):
     start_time = asyncio.get_event_loop().time()
     initial_channels = await get_user_channels(bot, user_id)
     while asyncio.get_event_loop().time() - start_time < timeout:
@@ -91,9 +90,9 @@ async def poll_admin_status(bot: types.Bot, user_id: int, channel_type: str, sta
                 if await check_admin_status(bot, channel_id, bot.id):
                     channel = await bot.get_chat(channel_id)
                     channel_name = channel.title or "Unnamed Channel"
-                    existing_channels = await db.get_channels(user_id, channel_type)
+                    existing_channels = await db_instance.get_channels(user_id, channel_type)
                     if channel_id not in existing_channels and len(existing_channels) < 5:
-                        await db.save_channel(user_id, channel_type, channel_id)
+                        await db_instance.save_channel(user_id, channel_type, channel_id)
                         try:
                             await bot.send_message(user_id, f"Channel {channel_name} connected as {channel_type} channel! ✅")
                             logger.info(f"Sent PM confirmation for {channel_type} channel {channel_id} to user {user_id}")
@@ -115,7 +114,7 @@ async def poll_admin_status(bot: types.Bot, user_id: int, channel_type: str, sta
     await state.clear()
     return False
 
-def register_handlers(dp: Dispatcher, db: Database, shortener: Shortener, bot: types.Bot):
+def register_handlers(dp: Dispatcher, db: Database, shortener: Shortener, bot: Bot):
     global db_instance
     db_instance = db
     ADMINS = [123456789]  # Replace with actual admin IDs
@@ -307,7 +306,7 @@ def register_handlers(dp: Dispatcher, db: Database, shortener: Shortener, bot: t
             logger.error(f"Error indexing media for user {user_id} in chat {chat_id}: {e}")
             await message.reply("Failed to index media. Try again or contact support. 😕")
 
-    async def post_media_with_delay(bot: types.Bot, user_id: int, file_name: str, raw_link: str, chat_id: int):
+    async def post_media_with_delay(bot: Bot, user_id: int, file_name: str, raw_link: str, chat_id: int):
         try:
             logger.info(f"Scheduling delayed post for media {file_name} for user {user_id}")
             await asyncio.sleep(20)
@@ -315,7 +314,7 @@ def register_handlers(dp: Dispatcher, db: Database, shortener: Shortener, bot: t
         except Exception as e:
             logger.error(f"Error in delayed post_media for user {user_id}: {e}")
 
-    async def post_media(bot: types.Bot, user_id: int, file_name: str, raw_link: str, chat_id: int):
+    async def post_media(bot: Bot, user_id: int, file_name: str, raw_link: str, chat_id: int):
         logger.info(f"Posting media {file_name} for user {user_id}")
         try:
             shortener_settings = await db_instance.get_shortener(user_id)

@@ -11,15 +11,18 @@ ENABLE_SHORTLINK = True
 BOT_USERNAME = "@Complete_jwshw_bot"
 
 # Logging Configuration
-logging.basicConfig(
-    level=logging.WARNING,  # Suppress INFO logs from external libraries
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-    handlers=[
-        RotatingFileHandler("bot.log", maxBytes=10*1024*1024, backupCount=5),  # 10MB per file, keep 5 backups
-        logging.StreamHandler()
-    ]
-)
+logger = logging.getLogger()
+logger.setLevel(logging.INFO)  # Set root logger to INFO
+for handler in logger.handlers[:]:  # Clear existing handlers
+    logger.removeHandler(handler)
+formatter = logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s")
+file_handler = RotatingFileHandler("bot.log", maxBytes=10*1024*1024, backupCount=5)  # 10MB, 5 backups
+file_handler.setLevel(logging.INFO)
+file_handler.setFormatter(formatter)
+console_handler = logging.StreamHandler()
+console_handler.setLevel(logging.INFO)
+console_handler.setFormatter(formatter)
+logger.addHandler(file_handler)
+logger.addHandler(console_handler)
 logging.getLogger("aiogram").setLevel(logging.WARNING)  # Suppress aiogram INFO logs
-logging.getLogger("database").setLevel(logging.WARNING)  # Suppress database INFO logs
-logger = logging.getLogger(__name__)
-logger.setLevel(logging.INFO)  # Enable INFO for custom logs
+logging.getLogger("motor").setLevel(logging.WARNING)  # Suppress motor INFO logs

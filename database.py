@@ -74,7 +74,7 @@ class Database:
             result = await self.db.media.insert_one(media_doc)
             logger.info(f"Saved media {file_name} for user {user_id} with ID {result.inserted_id}")
         except Exception as e:
-            logger.error(f"Error saving media {file_name} for user {user_id}: {e}")
+            logger.error(f"Error saving media {file_name} for user {user_id}: {e}", exc_info=True)
             raise
 
     async def get_user_media(self, user_id: int):
@@ -84,7 +84,7 @@ class Database:
             logger.info(f"Fetched {len(media_files)} media files for user {user_id}")
             return media_files
         except Exception as e:
-            logger.error(f"Error fetching media for user {user_id}: {e}")
+            logger.error(f"Error fetching media for user {user_id}: {e}", exc_info=True)
             return []
 
     async def save_channel(self, user_id: int, channel_type: str, channel_id: int):

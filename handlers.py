@@ -1,8 +1,8 @@
 from aiogram import Dispatcher, types, Bot
-from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, ChatMemberUpdated
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
-from aiogram.filters import Command, StateFilter, BaseFilter, ChatMemberUpdatedFilter, IS_ADMIN
+from aiogram.filters import Command, StateFilter, BaseFilter
 import asyncio
 import logging
 from database import Database
@@ -71,7 +71,9 @@ async def connect_channel(bot: Bot, user_id: int, channel_id: int, channel_type:
         channel_name = channel.title or "Unnamed Channel"
         existing_channels = await db_instance.get_channels(user_id, channel_type)
         if channel_id in existing_channels:
+            await bot.send_message(user_id, f"Channel {channel_name} is already connected as a {channel_type} channel! ✅")
             logger.info(f"{channel_type} channel {channel_id} already connected for user {user_id}")
+            await state.clear()
             return False
         if len(existing_channels) >= 5:
             await bot.send_message(user_id, f"Max 5 {channel_type} channels allowed! 🚫")
@@ -91,6 +93,7 @@ async def connect_channel(bot: Bot, user_id: int, channel_id: int, channel_type:
         return True
     except Exception as e:
         logger.error(f"Error connecting {channel_type} channel {channel_id} for user {user_id}: {e}")
+        await bot.send_message(user_id, f"Failed to connect {channel_type} channel. Try again. 😕")
         await state.clear()
         return False
 
@@ -107,7 +110,7 @@ def register_handlers(dp: Dispatcher, db: Database, shortener: Shortener, bot: B
         welcome_msg = (
             "Welcome to your personal storage bot! 📦\n"
             "Save media, auto-post to channels, and more.\n"
-            "To connect channels, use the menu and make me an admin.\n"
+            "To connect channels, use the menu, make me an admin, and send /verify_channel in the channel.\n"
             "Let's get started! 🚀"
         )
         keyboard = InlineKeyboardMarkup(inline_keyboard=[
@@ -125,42 +128,13 @@ def register_handlers(dp: Dispatcher, db: Database, shortener: Shortener, bot: B
         logger.info(f"User {user_id} requested main menu")
         await state.clear()
         new_text = "Choose an option: 🛠️"
-        current_text = getattr(callback.message, 'text', '')
-        current_markup = getattr(callback.message, 'reply_markup', None)
-        new_markup = get_main_menu()
         try:
-            if current_text != new_text or current_markup != new_markup:
-                await callback.message.edit_text(new_text, reply_markup=new_markup)
-                logger.info(f"Displayed main menu for user {user_id}")
+            await callback.message.edit_text(new_text, reply_markup=get_main_menu())
+            logger.info(f"Displayed main menu for user {user_id}")
             await callback.answer()
         except Exception as e:
             logger.error(f"Failed to show main menu for user {user_id}: {e}")
-
-    @dp.chat_member(ChatMemberUpdatedFilter(member_status_changed=IS_ADMIN))
-    async def on_admin_status_change(chat_member: ChatMemberUpdated, state: FSMContext):
-        channel_id = chat_member.chat.id
-        logger.info(f"Bot admin status changed in channel {channel_id}")
-        try:
-            if chat_member.new_chat_member.user.id != bot.id:
-                logger.info(f"Ignoring non-bot admin update in channel {channel_id}")
-                return
-            if chat_member.new_chat_member.status not in ["administrator", "creator"]:
-                logger.info(f"Bot demoted in channel {channel_id}")
-                return
-            user_id = chat_member.from_user.id
-            user_state = await state.get_state()
-            channel_type = None
-            if user_state == BotStates.SET_POST_CHANNEL.state:
-                channel_type = "post"
-            elif user_state == BotStates.SET_DATABASE_CHANNEL.state:
-                channel_type = "database"
-            if not channel_type:
-                logger.info(f"No active connection state for user {user_id} in channel {channel_id}")
-                return
-            if await check_admin_status(bot, channel_id, bot.id):
-                await connect_channel(bot, user_id, channel_id, channel_type, state)
-        except Exception as e:
-            logger.error(f"Error handling admin status change in channel {channel_id}: {e}")
+            await callback.message.reply("Failed to show menu. Try again. 😕")
 
     @dp.callback_query(lambda c: c.data == "add_post_channel")
     async def add_post_channel(callback: types.CallbackQuery, state: FSMContext):
@@ -176,7 +150,7 @@ def register_handlers(dp: Dispatcher, db: Database, shortener: Shortener, bot: B
             await state.set_state(BotStates.SET_POST_CHANNEL)
             logger.info(f"Set FSM state SET_POST_CHANNEL for user {user_id}")
             await callback.message.edit_text(
-                "Make me an admin in your post channel. I’ll connect automatically when added. 📢",
+                "Make me an admin in your post channel, then send /verify_channel in that channel. 📢",
                 reply_markup=get_main_menu()
             )
             logger.info(f"Prompted user {user_id} to add post channel")
@@ -200,7 +174,7 @@ def register_handlers(dp: Dispatcher, db: Database, shortener: Shortener, bot: B
             await state.set_state(BotStates.SET_DATABASE_CHANNEL)
             logger.info(f"Set FSM state SET_DATABASE_CHANNEL for user {user_id}")
             await callback.message.edit_text(
-                "Make me an admin in your database channel. I’ll connect automatically when added. 🗄️",
+                "Make me an admin in your database channel, then send /verify_channel in that channel. 🗄️",
                 reply_markup=get_main_menu()
             )
             logger.info(f"Prompted user {user_id} to add database channel")
@@ -210,6 +184,35 @@ def register_handlers(dp: Dispatcher, db: Database, shortener: Shortener, bot: B
             await callback.message.reply("Failed to initiate database channel setup. Try again. 😕")
             await state.clear()
 
+    @dp.message(Command("verify_channel"))
+    async def verify_channel(message: types.Message, state: FSMContext):
+        user_id = message.from_user.id
+        chat_id = message.chat.id
+        logger.info(f"User {user_id} verifying channel {chat_id}")
+        try:
+            if message.chat.type != "channel":
+                await message.reply("Please send this command in a channel. 😕")
+                logger.warning(f"User {user_id} sent /verify_channel in non-channel chat {chat_id}")
+                return
+            user_state = await state.get_state()
+            channel_type = None
+            if user_state == BotStates.SET_POST_CHANNEL.state:
+                channel_type = "post"
+            elif user_state == BotStates.SET_DATABASE_CHANNEL.state:
+                channel_type = "database"
+            else:
+                await message.reply("Please select 'Add Post Channel' or 'Add Database Channel' first via the menu. 😕")
+                logger.warning(f"User {user_id} sent /verify_channel without active state in channel {chat_id}")
+                return
+            if await check_admin_status(bot, chat_id, bot.id):
+                await connect_channel(bot, user_id, chat_id, channel_type, state)
+            else:
+                await message.reply("I’m not an admin in this channel. Make me an admin and try again. 🚫")
+                logger.warning(f"Bot not admin in channel {chat_id} for user {user_id}")
+        except Exception as e:
+            logger.error(f"Error verifying channel {chat_id} for user {user_id}: {e}")
+            await message.reply("Failed to verify channel. Try again. 😕")
+
     @dp.callback_query(lambda c: c.data == "see_post_channels")
     async def see_post_channels(callback: types.CallbackQuery):
         user_id = callback.from_user.id
@@ -217,7 +220,10 @@ def register_handlers(dp: Dispatcher, db: Database, shortener: Shortener, bot: B
         try:
             channels = await db_instance.get_channels(user_id, "post")
             if not channels:
-                await callback.message.edit_text("No post channels connected! 🚫", reply_markup=get_main_menu())
+                new_text = "No post channels connected! 🚫"
+                current_text = getattr(callback.message, 'text', '')
+                if current_text != new_text:
+                    await callback.message.edit_text(new_text, reply_markup=get_main_menu())
                 logger.info(f"No post channels for user {user_id}")
                 await callback.answer()
                 return
@@ -230,7 +236,10 @@ def register_handlers(dp: Dispatcher, db: Database, shortener: Shortener, bot: B
                     InlineKeyboardButton(text="🗑️ Delete", callback_data=f"delete_post_{channel_id}")
                 ])
             keyboard.inline_keyboard.append([InlineKeyboardButton(text="⬅️ Back", callback_data="main_menu")])
-            await callback.message.edit_text("Connected Post Channels:", reply_markup=keyboard)
+            new_text = "Connected Post Channels:"
+            current_text = getattr(callback.message, 'text', '')
+            if current_text != new_text or getattr(callback.message, 'reply_markup', None) != keyboard:
+                await callback.message.edit_text(new_text, reply_markup=keyboard)
             logger.info(f"Displayed {len(channels)} post channels for user {user_id}")
             await callback.answer()
         except Exception as e:
@@ -244,7 +253,10 @@ def register_handlers(dp: Dispatcher, db: Database, shortener: Shortener, bot: B
         try:
             channels = await db_instance.get_channels(user_id, "database")
             if not channels:
-                await callback.message.edit_text("No database channels connected! 🚫", reply_markup=get_main_menu())
+                new_text = "No database channels connected! 🚫"
+                current_text = getattr(callback.message, 'text', '')
+                if current_text != new_text:
+                    await callback.message.edit_text(new_text, reply_markup=get_main_menu())
                 logger.info(f"No database channels for user {user_id}")
                 await callback.answer()
                 return
@@ -257,7 +269,10 @@ def register_handlers(dp: Dispatcher, db: Database, shortener: Shortener, bot: B
                     InlineKeyboardButton(text="🗑️ Delete", callback_data=f"delete_db_{channel_id}")
                 ])
             keyboard.inline_keyboard.append([InlineKeyboardButton(text="⬅️ Back", callback_data="main_menu")])
-            await callback.message.edit_text("Connected Database Channels:", reply_markup=keyboard)
+            new_text = "Connected Database Channels:"
+            current_text = getattr(callback.message, 'text', '')
+            if current_text != new_text or getattr(callback.message, 'reply_markup', None) != keyboard:
+                await callback.message.edit_text(new_text, reply_markup=keyboard)
             logger.info(f"Displayed {len(channels)} database channels for user {user_id}")
             await callback.answer()
         except Exception as e:
@@ -483,10 +498,8 @@ def register_handlers(dp: Dispatcher, db: Database, shortener: Shortener, bot: B
             media_files = await db_instance.get_user_media(user_id)
             new_text = f"Total files: {len(media_files)} 📊"
             current_text = getattr(callback.message, 'text', '')
-            current_markup = getattr(callback.message, 'reply_markup', None)
-            new_markup = get_main_menu()
-            if current_text != new_text or current_markup != new_markup:
-                await callback.message.edit_text(new_text, reply_markup=new_markup)
+            if current_text != new_text:
+                await callback.message.edit_text(new_text, reply_markup=get_main_menu())
             await callback.answer()
             logger.info(f"Displayed total files ({len(media_files)}) for user {user_id}")
         except Exception as e:
@@ -571,8 +584,7 @@ def register_handlers(dp: Dispatcher, db: Database, shortener: Shortener, bot: B
             else:
                 new_text = "No shortener set! 🚫"
             current_text = getattr(callback.message, 'text', '')
-            current_markup = getattr(callback.message, 'reply_markup', None)
-            if current_text != new_text or current_markup != new_markup:
+            if current_text != new_text:
                 await callback.message.edit_text(new_text, reply_markup=new_markup)
             await callback.answer()
             logger.info(f"Displayed shortener for user {user_id}")
@@ -701,8 +713,7 @@ def register_handlers(dp: Dispatcher, db: Database, shortener: Shortener, bot: B
             else:
                 new_text = "No clone bots created yet! 🚫\nUse 'Add Clone Bot' to create one."
             current_text = getattr(callback.message, 'text', '')
-            current_markup = getattr(callback.message, 'reply_markup', None)
-            if current_text != new_text or current_markup != new_markup:
+            if current_text != new_text:
                 await callback.message.edit_text(new_text, reply_markup=new_markup)
             await callback.answer()
             logger.info(f"Displayed clone bots for user {user_id}")

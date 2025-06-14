@@ -1,3 +1,4 @@
+
 """Configuration for bot and MongoDB."""
 import os
 

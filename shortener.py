@@ -1,182 +1,170 @@
+"""URL shortener integration."""
 import aiohttp
 import logging
-from pyrogram import Client, filters
-from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
-from bot import get_user_settings, save_user_settings
-from config import SHORTLINK_URL, SHORTLINK_API, ENABLE_SHORTLINK, BOT_USERNAME
+from pyrogram import Client, filters, enums
+from config import SHORTLINK_URL, SHORTLINK_API, ENABLE_SHORTLINK, ADMINS
+from pymongo import MongoClient
+from config import MONGO_URI, DB_NAME
 
-# Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    filename='bot.log'
-)
 logger = logging.getLogger(__name__)
+client = MongoClient(MONGO_URI)
+db = client[DB_NAME]
+settings_collection = db.settings
 
-async def get_shortlink(link, user_id=None, api_var=None, link_var=None):
-    logger.info(f"Generating short link for user {user_id}: {link}")
-    try:
-        if user_id:
-            settings = await get_user_settings(user_id)
-            URL = settings.get('shortlink', SHORTLINK_URL) if not link_var else link_var
-            API = settings.get('shortlink_api', SHORTLINK_API) if not api_var else api_var
-            IS_SHORTLINK = settings.get('enable_shortlink', ENABLE_SHORTLINK)
-        else:
-            URL = SHORTLINK_URL
-            API = SHORTLINK_API
-            IS_SHORTLINK = ENABLE_SHORTLINK
+async def get_shortlink(link, chat_id=None, api_var=None, link_var=None):
+    """Generate shortened link using provided logic."""
+    if chat_id:
+        settings = settings_collection.find_one({"chat_id": chat_id}) or {}
+        URL = settings.get('shortlink', SHORTLINK_URL) if api_var is None or link_var is None else link_var
+        API = settings.get('shortlink_api', SHORTLINK_API) if api_var is None or link_var is None else api_var
+        IS_SHORTLINK = settings.get('enable_shortlink', ENABLE_SHORTLINK)
+    elif api_var and link_var:
+        URL = link_var
+        API = api_var
+        IS_SHORTLINK = ENABLE_SHORTLINK
+    else:
+        URL = SHORTLINK_URL
+        API = SHORTLINK_API
+        IS_SHORTLINK = ENABLE_SHORTLINK
 
-        URL = str(URL).strip()
-        API = str(API).strip()
+    URL = str(URL).strip()
+    API = str(API).strip()
 
-        if not IS_SHORTLINK:
-            logger.info("Shortlink disabled, returning raw link")
-            return link
+    if not IS_SHORTLINK:
+        return link
 
-        if URL == "api.shareus.in":
-            url = f"https://{URL}/shortLink"
-            params = {"token": API, "format": "json", "link": link}
+    if URL == "api.shareus.in":
+        url = f"https://{URL}/shortLink"
+        params = {"token": API, "format": "json", "link": link}
+        try:
             async with aiohttp.ClientSession() as session:
-                async with session.get(url, params=params, ssl=False) as response:
-                    response.raise_for_status()
-                    data = await response.json(content_type=None)
+                async with session.get(url, params=params, raise_for_status=True, ssl=False) as response:
+                    data = await response.json(content_type="text/html")
                     if data["status"] == "success" and 'shortlink' in data:
-                        logger.info(f"Short link generated: {data['shortlink']}")
                         return data["shortlink"]
                     else:
-                        logger.error(f"Error: {data.get('message', 'Unknown error')}")
-                        return link
-        elif 'rocklink' in URL:
-            url = f"https://{URL}/api"
-            params = {'api': API, 'url': link}
+                        logger.error(f"Error: {data['message']}\nUrl Provider: {URL}")
+                        return f'https://{URL}/shortlink?api={API}&link={link}'
+        except Exception as e:
+            logger.error(f"Error: {e}\nUrl Provider: {URL}")
+            return f'https://{URL}/shortlink?token={API}&format=json&link={link}'
+    elif 'rocklink' in URL:
+        url = f'https://{URL}/api'
+        params = {'api': API, 'url': link}
+        try:
             async with aiohttp.ClientSession() as session:
-                async with session.get(url, params=params, ssl=False) as response:
-                    response.raise_for_status()
+                async with session.get(url, params=params, raise_for_status=True, ssl=False) as response:
                     data = await response.json()
                     if data["status"] == "success" and 'shortenedUrl' in data:
-                        logger.info(f"Short link generated: {data['shortenedUrl']}")
                         return data['shortenedUrl']
                     else:
-                        logger.error(f"Error: {data.get('message', 'Unknown error')}")
-                        return link
-        else:
-            url = f"https://{URL}/api"
-            params = {'api': API, 'url': link}
+                        logger.error(f"Error: {data['message']}\nUrl Provider: {URL}")
+                        return f'https://{URL}/shortlink?api={API}&url={link}'
+        except Exception as e:
+            logger.error(f"Error: {e}\nUrl Provider: {URL}")
+            return f'{URL}/shortlink?api={API}&url={link}'
+    else:
+        url = f'https://{URL}/api'
+        params = {'api': API, 'url': link}
+        try:
             async with aiohttp.ClientSession() as session:
-                async with session.get(url, params=params, ssl=False) as response:
-                    response.raise_for_status()
+                async with session.get(url, params=params, raise_for_status=True, ssl=False) as response:
                     data = await response.json()
                     if data["status"] == "success" and 'shortenedUrl' in data:
-                        logger.info(f"Short link generated: {data['shortenedUrl']}")
                         return data['shortenedUrl']
                     else:
-                        logger.error(f"Error: {data.get('message', 'Unknown error')}")
-                        return link
-    except Exception as e:
-        logger.error(f"Error generating short link for user {user_id}: {e}")
-        return link
+                        logger.error(f"Error: {data['message']}\nUrl Provider: {URL}")
+                        return f'https://{URL}/shortlink?api={API}&link={link}'
+        except Exception as e:
+            logger.error(f"Error: {e}\nUrl Provider: {URL}")
+            return f'https://{URL}/shortlink?api={API}&link={link}'
 
 async def get_verify_shorted_link(link):
-    logger.info(f"Verifying short link: {link}")
-    try:
-        API = SHORTLINK_API
-        URL = SHORTLINK_URL
-        https = link.split(":")[0]
-        if "http" == https:
-            link = link.replace("http", "https")
-        if URL == "api.shareus.in":
-            url = f"https://{URL}/shortLink"
-            params = {"token": API, "format": "json", "link": link}
+    """Verify and shorten link."""
+    API = SHORTLINK_API
+    URL = SHORTLINK_URL
+    https = link.split(":")[0]
+    if "http" == https:
+        https = "https"
+        link = link.replace("http", https)
+    if URL == "api.shareus.in":
+        url = f"https://{URL}/shortLink"
+        params = {"token": API, "format": "json", "link": link}
+        try:
             async with aiohttp.ClientSession() as session:
-                async with session.get(url, params=params, ssl=False) as response:
-                    response.raise_for_status()
-                    data = await response.json(content_type=None)
+                async with session.get(url, params=params, raise_for_status=True, ssl=False) as response:
+                    data = await response.json(content_type="text/html")
                     if data["status"] == "success":
-                        logger.info(f"Verified short link: {data['shortlink']}")
                         return data["shortlink"]
                     else:
-                        logger.error(f"Error: {data.get('message', 'Unknown error')}")
-                        return link
-        else:
-            url = f"https://{URL}/api"
-            params = {'api': API, 'url': link}
+                        logger.error(f"Error: {data['message']}")
+                        return f'https://{URL}/shortLink?token={API}&format=json&link={link}'
+        except Exception as e:
+            logger.error(e)
+            return f'https://{URL}/shortLink?token={API}&format=json&link={link}'
+    else:
+        url = f'https://{URL}/api'
+        params = {'api': API, 'url': link}
+        try:
             async with aiohttp.ClientSession() as session:
-                async with session.get(url, params=params, ssl=False) as response:
-                    response.raise_for_status()
+                async with session.get(url, params=params, raise_for_status=True, ssl=False) as response:
                     data = await response.json()
                     if data["status"] == "success":
-                        logger.info(f"Verified short link: {data['shortenedUrl']}")
                         return data['shortenedUrl']
                     else:
-                        logger.error(f"Error: {data.get('message', 'Unknown error')}")
-                        return link
-    except Exception as e:
-        logger.error(f"Error verifying short link: {e}")
-        return link
+                        logger.error(f"Error: {data['message']}")
+                        return f'https://{URL}/api?api={API}&link={link}'
+        except Exception as e:
+            logger.error(e)
+            return f'{URL}/api?api={API}&link={link}'
 
-@app.on_message(filters.command('shortlink') & filters.private)
-async def shortlink(client, message):
-    logger.info(f"Shortlink command received from user {message.from_user.id}")
-    try:
-        user_id = message.from_user.id
-        data = message.text.split(" ", 2)
-        if len(data) != 3:
-            await message.reply(
-                f"Hey {message.from_user.mention}, use the correct format!\n\n"
-                f"Example: <code>/shortlink earn4link.in your_api_key</code>",
-                quote=True
+def setup_shortener_handlers(app: Client):
+    """Register shortener-related handlers."""
+    
+    @app.on_message(filters.command('shortlink'))
+    async def shortlink_command(client, message):
+        """Handle /shortlink command to set shortener."""
+        userid = message.from_user.id if message.from_user else None
+        if not userid:
+            return await message.reply("You're an anonymous admin. Use /connect in PM.")
+
+        chat_type = message.chat.type
+        if chat_type == enums.ChatType.PRIVATE:
+            grpid = settings_collection.find_one({"user_id": userid, "type": "active_connection"})
+            if not grpid:
+                return await message.reply("Not connected to any groups!")
+            grp_id = grpid["chat_id"]
+            try:
+                chat = await client.get_chat(grp_id)
+                title = chat.title
+            except:
+                return await message.reply("Check /connections to see your chats.")
+        elif chat_type in [enums.ChatType.GROUP, enums.ChatType.SUPERGROUP]:
+            grp_id = message.chat.id
+            title = message.chat.title
+        else:
+            return await message.reply("Something went wrong.")
+
+        user = await client.get_chat_member(grp_id, userid)
+        if user.status not in [enums.ChatMemberStatus.ADMINISTRATOR, enums.ChatMemberStatus.OWNER] and userid not in ADMINS:
+            return await message.reply("<b>You don't have access to this command!</b>")
+
+        try:
+            command, shorlink_url, api = message.text.split(" ")
+        except ValueError:
+            return await message.reply(
+                f"<b>Hey {message.from_user.mention}, command incomplete :(\n\n"
+                f"Use proper format!\n\nFormat:\n\n<code>/shortlink mdisk.link b6d97f6s96ds69d69d68d575d</code></b>"
             )
-            return
 
-        _, shorlink_url, api = data
-        await save_user_settings(user_id, 'shortlink', shorlink_url)
-        await save_user_settings(user_id, 'shortlink_api', api)
-        await message.reply(
-            f"Shortener set successfully!\n\n"
-            f"Website: <code>{shorlink_url}</code>\nAPI: <code>{api}</code>",
-            quote=True
+        reply = await message.reply("<b>Please wait...</b>")
+        settings_collection.update_one(
+            {"chat_id": grp_id},
+            {"$set": {"shortlink": shorlink_url, "shortlink_api": api}},
+            upsert=True
         )
-        logger.info(f"Shortener set for user {user_id}: {shorlink_url}, {api}")
-    except Exception as e:
-        logger.error(f"Error in shortlink command for user {user_id}: {e}")
-        await message.reply("Error setting shortener. Try again.", quote=True)
-
-@app.on_callback_query(filters.regex("set_shortener"))
-async def set_shortener(client, callback):
-    user_id = callback.from_user.id
-    logger.info(f"Set shortener initiated by user {user_id}")
-    try:
-        new_text = "Send shortener URL and API (e.g., earn4link.in your_api_key)"
-        if callback.message.text != new_text:
-            await callback.message.edit(
-                new_text,
-                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Go Back", callback_data="main_menu")]])
-            )
-        await save_user_settings(user_id, "input_state", "set_shortener")
-        await callback.answer("Please send shortener details.")
-        logger.info(f"Waiting for shortener input from user {user_id}")
-    except Exception as e:
-        logger.error(f"Error in set_shortener for user {user_id}: {e}")
-        await callback.message.edit("Error occurred. Try again.")
-        await callback.answer("Error occurred!")
-
-@app.on_callback_query(filters.regex("see_shortener"))
-async def see_shortener(client, callback):
-    user_id = callback.from_user.id
-    logger.info(f"See shortener requested by user {user_id}")
-    try:
-        settings = await get_user_settings(user_id)
-        url = settings.get("shortlink", SHORTLINK_URL)
-        api = settings.get("shortlink_api", SHORTLINK_API)
-        new_text = f"Current Shortener:\nURL: {url}\nAPI: {api}"
-        if callback.message.text != new_text:
-            await callback.message.edit(
-                new_text,
-                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Go Back", callback_data="main_menu")]])
-            )
-        await callback.answer()
-        logger.info(f"Shortener details displayed for user {user_id}")
-    except Exception as e:
-        logger.error(f"Error in see_shortener for user {user_id}: {e}")
-        await callback.message.edit("Error occurred. Try again.")
-        await callback.answer("Error occurred!")
+        await reply.edit(
+            f"<b>Successfully added shortlink API for {title}\n\n"
+            f"Current shortlink website: <code>{shorlink_url}</code>\n"
+            f"Current API: <code>{api}</code>.</b>"
+        )
